@@ -1,17 +1,22 @@
 import Database from 'better-sqlite3'
 import { dirname, join } from 'node:path'
 import { mkdirSync } from 'node:fs'
-import { pathToFileURL } from 'node:url'
+import { pathToFileURL, fileURLToPath } from 'node:url'
 
 // 本地 SQLite 文件库，与 172.22.2.203 上的党建库 pb_show_init 零耦合、零牵连
 // 用完整 file:// URL（.href）避免 Windows 路径被 ESM loader 误判为协议
 //
-// ⚠️ 部署注意：Nitro 打包后运行时会 process.chdir() 到 .output/server，
-// process.cwd() 不再等于项目根，所以不能写 join(process.cwd(), 'data', ...)。
-// 这里优先用环境变量 DB_DIR（部署时可在 .env / PM2 里指定），
-// 否则回退到开发态的 cwd/data。服务器部署请把 DB_DIR 设为项目根 data 绝对路径。
-const DB_DIR = process.env.DB_DIR || join(process.cwd(), 'data')
-const DB_FILE = join(DB_DIR, 'software_cost.db')
+// ⚠️ 部署关键：Nitro 打包后运行时 process.chdir() 到 .output/server，
+// 且本文件会被 Nitro 以源码形式动态 import（trace 指向 server/utils/db.ts），
+// 因此 process.cwd() 不可靠。路径解析优先级：
+//   1) 环境变量 DB_DIR（ecosystem.config.cjs 已注入绝对路径，最可靠）
+//   2) import.meta.url 推导：db.ts 在 <ROOT>/server/utils/ → 项目根 = 上两级
+//   3) 兜底 process.cwd()/data（仅开发态）
+const here = dirname(fileURLToPath(import.meta.url))
+const DB_DIR =
+  process.env.DB_DIR ||
+  (here.replace(/[\\/]server[\\/]utils$/, '') || join(here, '..', '..')) + ''
+const DB_FILE = join(DB_DIR, 'data', 'software_cost.db')
 mkdirSync(dirname(DB_FILE), { recursive: true })
 const DB_PATH = pathToFileURL(DB_FILE).href
 
