@@ -1,6 +1,14 @@
 export default defineNuxtConfig({
   devtools: { enabled: false },
   buildDir: 'node_modules/.nuxt-build',
+  // ⚠️ 部署关键：Nitro 打包后不会自动加载 .env。
+  // 这里把敏感变量声明进 runtimeConfig，Nitro 会在构建期保留引用，
+  // 运行时通过 useRuntimeConfig() 或进程环境变量获取（见 ecosystem.config.cjs 注入）。
+  runtimeConfig: {
+    authSecret: process.env.AUTH_SECRET || '',
+    deepseekKey: process.env.DEEPSEEK_API_KEY || '',
+    dbDir: process.env.DB_DIR || '',
+  },
   css: ['~/assets/css/main.css'],
   postcss: {
     plugins: {

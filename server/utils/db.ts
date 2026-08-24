@@ -5,7 +5,13 @@ import { pathToFileURL } from 'node:url'
 
 // 本地 SQLite 文件库，与 172.22.2.203 上的党建库 pb_show_init 零耦合、零牵连
 // 用完整 file:// URL（.href）避免 Windows 路径被 ESM loader 误判为协议
-const DB_FILE = join(process.cwd(), 'data', 'software_cost.db')
+//
+// ⚠️ 部署注意：Nitro 打包后运行时会 process.chdir() 到 .output/server，
+// process.cwd() 不再等于项目根，所以不能写 join(process.cwd(), 'data', ...)。
+// 这里优先用环境变量 DB_DIR（部署时可在 .env / PM2 里指定），
+// 否则回退到开发态的 cwd/data。服务器部署请把 DB_DIR 设为项目根 data 绝对路径。
+const DB_DIR = process.env.DB_DIR || join(process.cwd(), 'data')
+const DB_FILE = join(DB_DIR, 'software_cost.db')
 mkdirSync(dirname(DB_FILE), { recursive: true })
 const DB_PATH = pathToFileURL(DB_FILE).href
 

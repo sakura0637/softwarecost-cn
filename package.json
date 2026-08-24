@@ -16,7 +16,8 @@
     "bcryptjs": "^3.0.3",
     "jose": "^6.2.10",
     "mammoth": "^1.12.1",
-    "xlsx": "^0.18.5"
+    "xlsx": "^0.18.5",
+    "dotenv": "^16.4.5"
   },
   "devDependencies": {
     "@nuxtjs/tailwindcss": "^6.12.0",
