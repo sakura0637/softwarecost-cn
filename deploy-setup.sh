@@ -18,7 +18,8 @@ fi
 echo "    node: $(node -v)  npm: $(npm -v)"
 
 echo "==> [3/5] 安装 PM2 进程守护..."
-sudo npm install -g pm2
+# 注意: NodeSource 把 npm 装在当前用户 PATH 下, sudo 切换 root 后找不到, 故不用 sudo
+npm install -g pm2
 pm2 --version
 
 echo "==> [4/5] 安装 Nginx 反代..."

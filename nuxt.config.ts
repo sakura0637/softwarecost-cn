@@ -22,9 +22,15 @@ export default defineNuxtConfig({
     transpile: [],
   },
   nitro: {
+    // 原生模块(better-sqlite3)在运行时从 node_modules 加载，禁止 nft 追踪打包
     externals: {
       external: ['better-sqlite3'],
-      traceInclude: ['better-sqlite3'],
+    },
+    output: {
+      external: ['better-sqlite3'],
+    },
+    rollupConfig: {
+      external: ['better-sqlite3'],
     },
   },
 })
