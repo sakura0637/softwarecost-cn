@@ -12,11 +12,29 @@ import { pathToFileURL, fileURLToPath } from 'node:url'
 //   1) 环境变量 DB_DIR（ecosystem.config.cjs 已注入绝对路径，最可靠）
 //   2) import.meta.url 推导：db.ts 在 <ROOT>/server/utils/ → 项目根 = 上两级
 //   3) 兜底 process.cwd()/data（仅开发态）
-const here = dirname(fileURLToPath(import.meta.url))
-const DB_DIR =
-  process.env.DB_DIR ||
-  (here.replace(/[\\/]server[\\/]utils$/, '') || join(here, '..', '..')) + ''
-const DB_FILE = join(DB_DIR, 'data', 'software_cost.db')
+// 本地 SQLite 文件库，与 172.22.2.203 上的党建库 pb_show_init 零耦合、零牵连
+// 用完整 file:// URL（.href）避免 Windows 路径被 ESM loader 误判为协议
+//
+// ⚠️ 部署关键：Nitro 打包后运行时 process.chdir() 到 .output/server，
+// 且本文件会被 Nitro 以源码形式动态 import（trace 指向 server/utils/db.ts），
+// 因此 process.cwd() 不可靠。多级探测项目根下的 data/ 目录：
+//   1) 环境变量 DB_DIR（ecosystem.config.cjs 注入的绝对路径，最可靠）
+//   2) 启动入口 .output/server/index.mjs → 项目根 = 去掉 .output/server
+//   3) import.meta.url（db.ts 在 <ROOT>/server/utils）→ 去掉 /server/utils
+//   4) 兜底 process.cwd()/data（仅开发态）
+function resolveDbDir(): string {
+  if (process.env.DB_DIR) return process.env.DB_DIR
+  const entry = process.argv[1] || ''
+  const m = entry.match(/(.*?)[\\/]\.output[\\/]server[\\/]/)
+  if (m && m[1]) return join(m[1], 'data')
+  const here = dirname(fileURLToPath(import.meta.url))
+  const byMeta = here.replace(/[\\/]server[\\/]utils$/, '')
+  if (byMeta && byMeta !== here) return join(byMeta, 'data')
+  return join(process.cwd(), 'data')
+}
+
+const DB_DIR = resolveDbDir()
+const DB_FILE = join(DB_DIR, 'software_cost.db')
 mkdirSync(dirname(DB_FILE), { recursive: true })
 const DB_PATH = pathToFileURL(DB_FILE).href
 
