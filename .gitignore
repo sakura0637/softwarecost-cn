@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+node_modules_bak/
+.pnp/
+.pnp.js
+
+# Nuxt build / generated output
+.output/
+.nuxt/
+.data/
+.cache/
+dist/
+
+# Environment (contains secrets - NEVER commit)
+.env
+.env.*
+!.env.example
+
+# Local SQLite database
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+npm-debug.log*
+dev_server.log
+
+# OS / editor temp
+.DS_Store
+Thumbs.db
+test_write.txt
+
+# WorkBuddy internal
+.workbuddy/
