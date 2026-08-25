@@ -1,6 +1,9 @@
 <script setup lang="ts">
 // 造价标准库页面
 import { standards, type CostStandard } from '~/composables/useStandards'
+import { useAuth } from '~/composables/useAuth'
+
+const { token, api } = useAuth()
 
 const searchQuery = ref('')
 const selectedCategory = ref('全部')
@@ -38,6 +41,62 @@ const filteredStandards = computed(() => {
 })
 
 const selectedStandard = ref<CostStandard | null>(null)
+const attachments = ref<any[]>([])
+const uploading = ref(false)
+const uploadFile = ref<File | null>(null)
+
+// 打开标准详情时拉取附件列表
+async function openStandard(std: CostStandard) {
+  selectedStandard.value = std
+  await loadAttachments(std.id)
+}
+
+async function loadAttachments(standardId: string) {
+  try {
+    const res: any = await $fetch(`/api/standards/${standardId}/attachments`)
+    attachments.value = res.items || []
+  } catch {
+    attachments.value = []
+  }
+}
+
+function formatSize(bytes: number | null): string {
+  if (bytes == null) return ''
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(2)} MB`
+}
+
+async function onUpload() {
+  if (!uploadFile.value || !selectedStandard.value) return
+  const formData = new FormData()
+  formData.append('file', uploadFile.value)
+  uploading.value = true
+  try {
+    await api(`/api/standards/${selectedStandard.value.id}/attachments`, {
+      method: 'POST',
+      body: formData,
+    })
+    uploadFile.value = null
+    const input = document.getElementById('std-file-input') as HTMLInputElement | null
+    if (input) input.value = ''
+    await loadAttachments(selectedStandard.value.id)
+  } catch (e: any) {
+    alert(e?.data?.statusMessage || '上传失败')
+  } finally {
+    uploading.value = false
+  }
+}
+
+async function onDelete(fid: number) {
+  if (!confirm('确定删除该附件？')) return
+  try {
+    await api(`/api/standards/${selectedStandard.value!.id}/attachments/${fid}`, { method: 'DELETE' })
+    await loadAttachments(selectedStandard.value!.id)
+  } catch (e: any) {
+    alert(e?.data?.statusMessage || '删除失败')
+  }
+}
 
 const stats = computed(() => ({
   total: standards.length,
@@ -114,7 +173,7 @@ const stats = computed(() => ({
           v-for="std in filteredStandards"
           :key="std.id"
           class="card cursor-pointer"
-          @click="selectedStandard = std"
+          @click="openStandard(std)"
         >
           <div class="mb-3 flex items-start justify-between">
             <span class="rounded-md bg-primary/10 px-2 py-1 text-xs font-medium text-primary">{{ std.category }}</span>
@@ -170,6 +229,52 @@ const stats = computed(() => ({
             </div>
             <div class="mt-6 rounded-lg bg-gray-50 p-4 text-xs text-gray-400">
               注：以上数据整理自公开资料，仅供演示参考。实际评估请以官方发布的最新标准文本为准。
+            </div>
+
+            <!-- 附件（政策原文，后台上传） -->
+            <div class="mt-4">
+              <h4 class="mb-2 text-sm font-semibold text-gray-900">附件（政策原文）</h4>
+              <div v-if="attachments.length" class="space-y-2">
+                <div
+                  v-for="a in attachments"
+                  :key="a.id"
+                  class="flex items-center justify-between gap-2 rounded-lg bg-gray-50 px-3 py-2 text-sm"
+                >
+                  <a
+                    :href="`/api/standards/${selectedStandard.id}/attachments/${a.id}`"
+                    target="_blank"
+                    :download="a.file_name"
+                    class="flex-1 truncate text-primary hover:underline"
+                  >
+                    {{ a.file_name }}
+                    <span class="text-xs text-gray-400">（{{ formatSize(a.file_size) }}）</span>
+                  </a>
+                  <button v-if="token" class="shrink-0 text-xs text-red-500 hover:underline" @click="onDelete(a.id)">
+                    删除
+                  </button>
+                </div>
+              </div>
+              <p v-else class="text-xs text-gray-400">暂无附件</p>
+
+              <!-- 上传（需登录） -->
+              <div v-if="token" class="mt-3 flex items-center gap-2">
+                <input
+                  id="std-file-input"
+                  type="file"
+                  class="block w-full text-xs text-gray-500 file:mr-2 file:rounded file:border-0 file:bg-primary/10 file:px-3 file:py-1 file:text-primary"
+                  @change="(e: any) => (uploadFile = e.target.files?.[0] || null)"
+                />
+                <button
+                  :disabled="!uploadFile || uploading"
+                  class="shrink-0 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+                  @click="onUpload"
+                >
+                  {{ uploading ? '上传中…' : '上传' }}
+                </button>
+              </div>
+              <p v-else class="mt-3 text-xs text-gray-400">
+                请 <NuxtLink to="/login" class="text-primary hover:underline">登录</NuxtLink> 后上传附件
+              </p>
             </div>
           </div>
         </div>

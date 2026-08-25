@@ -41,6 +41,11 @@ function resolveDbDir(): string {
 const DB_DIR = resolveDbDir()
 const DB_FILE = join(DB_DIR, 'software_cost.db')
 
+// 标准附件上传目录（data/uploads/standards/），与 DB 同根，确保 deploy 后一定存在
+export const DATA_DIR = DB_DIR
+export const STANDARD_UPLOAD_DIR = join(DB_DIR, 'uploads', 'standards')
+mkdirSync(STANDARD_UPLOAD_DIR, { recursive: true })
+
 const db = new Database(DB_FILE)
 db.pragma('journal_mode = WAL')
 db.pragma('foreign_keys = ON')
@@ -126,6 +131,20 @@ CREATE TABLE IF NOT EXISTS device_prices (
 );
 CREATE INDEX IF NOT EXISTS idx_dp_station  ON device_prices(station);
 CREATE INDEX IF NOT EXISTS idx_dp_category ON device_prices(category);
+`)
+
+// ── 标准附件（后台上传，文件存于 data/uploads/standards/）──────────
+db.exec(`
+CREATE TABLE IF NOT EXISTS standard_attachments (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  standard_id  VARCHAR(64)  NOT NULL,         -- 关联 useStandards.ts 的 id
+  file_name    VARCHAR(255) NOT NULL,         -- 原始文件名（下载时展示）
+  stored_name  VARCHAR(255) NOT NULL,         -- 磁盘实际文件名（防冲突/防注入）
+  file_size    INTEGER,
+  mime_type    VARCHAR(128),
+  uploaded_at  TEXT         NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_sa_std ON standard_attachments(standard_id);
 `)
 
 // 首次启动灌入种子数据（幂等：表非空则跳过，避免重复灌入）

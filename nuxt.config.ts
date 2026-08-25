@@ -40,5 +40,9 @@ export default defineNuxtConfig({
     rollupConfig: {
       external: ['better-sqlite3'],
     },
+    // 标准附件上传放开请求体大小上限（默认 1MB 会被 PDF 顶爆）
+    routeRules: {
+      '/api/standards/**': { body: { maxSize: '25mb' } },
+    },
   },
 })
