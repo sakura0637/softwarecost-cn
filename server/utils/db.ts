@@ -1,44 +1,47 @@
 import Database from 'better-sqlite3'
 import { dirname, join } from 'node:path'
 import { mkdirSync } from 'node:fs'
-import { pathToFileURL, fileURLToPath } from 'node:url'
+import { fileURLToPath } from 'node:url'
 
 // 本地 SQLite 文件库，与 172.22.2.203 上的党建库 pb_show_init 零耦合、零牵连
-// 用完整 file:// URL（.href）避免 Windows 路径被 ESM loader 误判为协议
 //
-// ⚠️ 部署关键：Nitro 打包后运行时 process.chdir() 到 .output/server，
-// 且本文件会被 Nitro 以源码形式动态 import（trace 指向 server/utils/db.ts），
-// 因此 process.cwd() 不可靠。路径解析优先级：
+// ⚠️ 关键坑（已踩）：better-sqlite3 的 new Database() 只接受【普通文件路径字符串】，
+//    绝对不能传 file:// URL（pathToFileURL().href 那种）。
+//    Linux 下 file:///home/... 会被当成字面路径，导致父目录不存在而报错
+//    "Cannot open database because the directory does not exist"。
+//
+// 部署路径解析优先级（Nitro 打包后会 process.chdir() 到 .output/server，且本文件
+// 以源码形式被动态 import，trace 指向 server/utils/db.ts，故 cwd 不可靠）：
 //   1) 环境变量 DB_DIR（ecosystem.config.cjs 已注入绝对路径，最可靠）
-//   2) import.meta.url 推导：db.ts 在 <ROOT>/server/utils/ → 项目根 = 上两级
-//   3) 兜底 process.cwd()/data（仅开发态）
-// 本地 SQLite 文件库，与 172.22.2.203 上的党建库 pb_show_init 零耦合、零牵连
-// 用完整 file:// URL（.href）避免 Windows 路径被 ESM loader 误判为协议
-//
-// ⚠️ 部署关键：Nitro 打包后运行时 process.chdir() 到 .output/server，
-// 且本文件会被 Nitro 以源码形式动态 import（trace 指向 server/utils/db.ts），
-// 因此 process.cwd() 不可靠。多级探测项目根下的 data/ 目录：
-//   1) 环境变量 DB_DIR（ecosystem.config.cjs 注入的绝对路径，最可靠）
 //   2) 启动入口 .output/server/index.mjs → 项目根 = 去掉 .output/server
 //   3) import.meta.url（db.ts 在 <ROOT>/server/utils）→ 去掉 /server/utils
 //   4) 兜底 process.cwd()/data（仅开发态）
 function resolveDbDir(): string {
-  if (process.env.DB_DIR) return process.env.DB_DIR
+  const candidates: string[] = []
+  if (process.env.DB_DIR) candidates.push(process.env.DB_DIR)
   const entry = process.argv[1] || ''
-  const m = entry.match(/(.*?)[\\/]\.output[\\/]server[\\/]/)
-  if (m && m[1]) return join(m[1], 'data')
+  const m = entry.match(/(.+?)[\\/]\.output[\\/]server[\\/]/)
+  if (m && m[1]) candidates.push(join(m[1], 'data'))
   const here = dirname(fileURLToPath(import.meta.url))
   const byMeta = here.replace(/[\\/]server[\\/]utils$/, '')
-  if (byMeta && byMeta !== here) return join(byMeta, 'data')
-  return join(process.cwd(), 'data')
+  if (byMeta && byMeta !== here) candidates.push(join(byMeta, 'data'))
+  candidates.push(join(process.cwd(), 'data'))
+  // 返回第一个可创建/已存在的目录，确保 new Database 时父目录一定存在
+  for (const d of candidates) {
+    try {
+      mkdirSync(d, { recursive: true })
+      return d
+    } catch {
+      /* 该候选不可用，尝试下一个 */
+    }
+  }
+  return candidates[candidates.length - 1]
 }
 
 const DB_DIR = resolveDbDir()
 const DB_FILE = join(DB_DIR, 'software_cost.db')
-mkdirSync(dirname(DB_FILE), { recursive: true })
-const DB_PATH = pathToFileURL(DB_FILE).href
 
-const db = new Database(DB_PATH)
+const db = new Database(DB_FILE)
 db.pragma('journal_mode = WAL')
 db.pragma('foreign_keys = ON')
 
