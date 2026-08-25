@@ -8,6 +8,10 @@ const { token, api } = useAuth()
 const searchQuery = ref('')
 const selectedCategory = ref('全部')
 const selectedLevel = ref('全部')
+const selectedAttachment = ref<'all' | 'has' | 'none'>('all')
+
+// 各标准附件计数（来自后台汇总接口），驱动「是否含附件」筛选与卡片角标
+const attachSummary = ref<Record<string, number>>({})
 
 const categories = computed(() => ['全部', ...Array.from(new Set(standards.map(s => s.category)))])
 const levels = [
@@ -36,14 +40,45 @@ const filteredStandards = computed(() => {
       || s.org.includes(searchQuery.value)
     const matchCategory = selectedCategory.value === '全部' || s.category === selectedCategory.value
     const matchLevel = selectedLevel.value === '全部' || s.level === selectedLevel.value
-    return matchSearch && matchCategory && matchLevel
+    const hasAtt = (attachSummary.value[s.id] || 0) > 0
+    const matchAttachment =
+      selectedAttachment.value === 'all'
+      || (selectedAttachment.value === 'has' && hasAtt)
+      || (selectedAttachment.value === 'none' && !hasAtt)
+    return matchSearch && matchCategory && matchLevel && matchAttachment
   })
 })
+
+// 拉取各标准附件计数（公开接口）
+async function loadSummary() {
+  try {
+    const res: any = await $fetch('/api/standards/attachments-summary')
+    attachSummary.value = res.counts || {}
+  } catch {
+    attachSummary.value = {}
+  }
+}
+onMounted(loadSummary)
 
 const selectedStandard = ref<CostStandard | null>(null)
 const attachments = ref<any[]>([])
 const uploading = ref(false)
 const uploadFile = ref<File | null>(null)
+
+// 附件在线预览（无需下载）。previewAttachment 为当前预览的附件对象，null 表示关闭。
+const previewAttachment = ref<any | null>(null)
+const PREVIEWABLE = (mime: string | null | undefined) =>
+  !!mime && (mime === 'application/pdf' || mime.startsWith('image/') || mime.startsWith('text/'))
+function openPreview(a: any) {
+  // 所有附件都可点开预览浮层；可内联渲染的（PDF/图片/文本）走 iframe，其余在浮层内提示下载
+  previewAttachment.value = a
+}
+function closePreview() {
+  previewAttachment.value = null
+}
+function previewUrl(a: any): string {
+  return `/api/standards/${selectedStandard.value!.id}/attachments/${a.id}?preview=1`
+}
 
 // 打开标准详情时拉取附件列表
 async function openStandard(std: CostStandard) {
@@ -81,6 +116,7 @@ async function onUpload() {
     const input = document.getElementById('std-file-input') as HTMLInputElement | null
     if (input) input.value = ''
     await loadAttachments(selectedStandard.value.id)
+    await loadSummary()
   } catch (e: any) {
     alert(e?.data?.statusMessage || '上传失败')
   } finally {
@@ -93,6 +129,7 @@ async function onDelete(fid: number) {
   try {
     await api(`/api/standards/${selectedStandard.value!.id}/attachments/${fid}`, { method: 'DELETE' })
     await loadAttachments(selectedStandard.value!.id)
+    await loadSummary()
   } catch (e: any) {
     alert(e?.data?.statusMessage || '删除失败')
   }
@@ -162,6 +199,18 @@ const stats = computed(() => ({
             {{ cat }}
           </button>
         </div>
+        <div class="mt-4 flex flex-wrap items-center gap-2">
+          <span class="text-xs text-gray-400">附件状态：</span>
+          <button
+            v-for="opt in [{ key: 'all', label: '全部' }, { key: 'has', label: '已上传附件' }, { key: 'none', label: '未上传附件' }]"
+            :key="opt.key"
+            class="rounded-full px-3 py-1.5 text-xs font-medium transition-colors"
+            :class="selectedAttachment === opt.key ? 'bg-primary text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
+            @click="selectedAttachment = opt.key"
+          >
+            {{ opt.label }}
+          </button>
+        </div>
       </div>
     </section>
 
@@ -181,6 +230,12 @@ const stats = computed(() => ({
           </div>
           <h3 class="mb-1 font-semibold text-gray-900 line-clamp-2">{{ std.name }}</h3>
           <p class="text-xs text-gray-400">{{ std.region }} · {{ std.code }}</p>
+          <span
+            v-if="(attachSummary[std.id] || 0) > 0"
+            class="mt-1 inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-600"
+          >
+            📎 {{ attachSummary[std.id] }} 个附件
+          </span>
           <p class="mt-2 text-sm text-gray-500 line-clamp-2">{{ std.summary }}</p>
           <div class="mt-3 flex items-center justify-between">
             <span class="text-xs text-gray-400">{{ std.org }}</span>
@@ -249,6 +304,12 @@ const stats = computed(() => ({
                     {{ a.file_name }}
                     <span class="text-xs text-gray-400">（{{ formatSize(a.file_size) }}）</span>
                   </a>
+                  <button
+                    class="shrink-0 text-xs text-blue-500 hover:underline"
+                    @click="openPreview(a)"
+                  >
+                    预览
+                  </button>
                   <button v-if="token" class="shrink-0 text-xs text-red-500 hover:underline" @click="onDelete(a.id)">
                     删除
                   </button>
@@ -275,6 +336,47 @@ const stats = computed(() => ({
               <p v-else class="mt-3 text-xs text-gray-400">
                 请 <NuxtLink to="/login" class="text-primary hover:underline">登录</NuxtLink> 后上传附件
               </p>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
+    <!-- 附件在线预览浮层（无需下载） -->
+    <Teleport to="body">
+      <Transition name="modal">
+        <div
+          v-if="previewAttachment"
+          class="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4"
+          @click.self="closePreview"
+        >
+          <div class="flex h-[85vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl bg-white shadow-xl">
+            <div class="flex items-center justify-between border-b border-gray-100 px-5 py-3">
+              <div class="min-w-0">
+                <p class="truncate text-sm font-semibold text-gray-900">{{ previewAttachment.file_name }}</p>
+                <p class="text-xs text-gray-400">{{ formatSize(previewAttachment.file_size) }} · {{ previewAttachment.mime_type }}</p>
+              </div>
+              <div class="flex shrink-0 items-center gap-3">
+                <a
+                  :href="`/api/standards/${selectedStandard.id}/attachments/${previewAttachment.id}`"
+                  target="_blank"
+                  :download="previewAttachment.file_name"
+                  class="text-xs text-primary hover:underline"
+                >下载</a>
+                <button class="text-gray-400 hover:text-gray-600" @click="closePreview">
+                  <svg class="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div class="flex-1 bg-gray-100">
+              <template v-if="PREVIEWABLE(previewAttachment.mime_type)">
+                <iframe :src="previewUrl(previewAttachment)" class="h-full w-full border-0" />
+              </template>
+              <div v-else class="flex h-full items-center justify-center text-sm text-gray-500">
+                该文件格式暂不支持在线预览，请点击右上角「下载」查看。
+              </div>
             </div>
           </div>
         </div>

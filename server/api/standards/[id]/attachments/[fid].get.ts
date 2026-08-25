@@ -1,9 +1,10 @@
 import db, { STANDARD_UPLOAD_DIR } from '../../../../utils/db'
-import { createError, getRouterParam, setResponseHeaders } from 'h3'
+import { createError, getQuery, getRouterParam, setResponseHeaders } from 'h3'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
-// 下载标准附件（公开）。按 id 取 stored_name 落盘文件，原文件名作下载名。
+// 下载 / 预览标准附件（公开）。
+// 默认 attachment（强制下载）；加 ?preview=1 时改为 inline，浏览器内联渲染（PDF/图片可直接预览）。
 export default defineEventHandler(async (event) => {
   const fid = getRouterParam(event, 'fid')!
   const row = db.prepare('SELECT * FROM standard_attachments WHERE id = ?').get(fid) as any
@@ -12,9 +13,14 @@ export default defineEventHandler(async (event) => {
   const filePath = join(STANDARD_UPLOAD_DIR, row.stored_name)
   const data = await readFile(filePath)
 
+  const preview = getQuery(event).preview === '1'
+  const disposition = preview
+    ? `inline; filename="${encodeURIComponent(row.file_name)}"; filename*=UTF-8''${encodeURIComponent(row.file_name)}`
+    : `attachment; filename="${encodeURIComponent(row.file_name)}"; filename*=UTF-8''${encodeURIComponent(row.file_name)}`
+
   setResponseHeaders(event, {
     'Content-Type': row.mime_type || 'application/octet-stream',
-    'Content-Disposition': `attachment; filename="${encodeURIComponent(row.file_name)}"; filename*=UTF-8''${encodeURIComponent(row.file_name)}`,
+    'Content-Disposition': disposition,
     'Content-Length': String(data.length),
     'Cache-Control': 'no-store',
   })
