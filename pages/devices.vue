@@ -75,7 +75,7 @@ function setSort(col: string) {
       <div class="container-custom">
         <h1 class="text-3xl font-bold text-white md:text-4xl">设备价格库</h1>
         <p class="mt-3 max-w-2xl text-blue-100">
-          汇集南水北调中线输水管控能力提升项目 10 个管理处（石家庄、沧州、衡水、邢台、邯郸、保定、保沧、廊坊、廊涿、总调中心）的真实设备台账价格，支持按设备名称、品牌型号、站点与分类检索。
+          汇集南水北调配套工程 10 个管理处（石家庄、沧州、衡水、邢台、邯郸、保定、保沧、廊坊、廊涿、总调中心）的真实设备台账价格，支持按设备名称、品牌型号、站点与分类检索。
         </p>
       </div>
     </section>
