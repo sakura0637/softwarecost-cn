@@ -222,7 +222,7 @@ onMounted(loadProject)
             </div>
           </div>
           <p v-if="uploadMsg" class="mt-3 text-sm text-primary">{{ uploadMsg }}</p>
-          <div v-if="rawTextPreview" class="mt-3 rounded-lg bg-gray-50 p-3 text-xs text-gray-500">
+          <div v-if="rawTextPreview" class="mt-3 max-h-96 overflow-y-auto rounded-lg bg-gray-50 p-3 text-xs text-gray-500">
             <p class="mb-1 font-medium text-gray-600">已提取的需求文本预览：</p>
             <p class="whitespace-pre-wrap">{{ rawTextPreview }}</p>
           </div>
