@@ -50,7 +50,7 @@ export default defineEventHandler((event) => {
   const total = (db.prepare(`SELECT COUNT(*) AS c FROM device_prices ${whereSql}`).get(...params) as { c: number }).c
   const items = db
     .prepare(
-      `SELECT id, station, subsite, category, name, unit, brand_model, qty, unit_price, total_price, remark
+      `       SELECT id, station, subsite, category, subcategory, name, unit, brand_model, qty, unit_price, total_price, remark
        FROM device_prices ${whereSql} ORDER BY ${sortCol} ${order} LIMIT ? OFFSET ?`
     )
     .all(...params, pageSize, offset)

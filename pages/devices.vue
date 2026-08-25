@@ -75,23 +75,41 @@ async function load() {
   }
 }
 
-// 切换站点 → 清空子站/子分类并重载选项
+// 切换站点 → 清空子站/子分类并重载选项，并自动查询
 watch(station, () => {
   subsite.value = ''
   subcategory.value = ''
+  page.value = 1
   refreshSubsiteOptions()
   refreshSubcategoryOptions()
+  load()
 })
-// 切换分类 → 子分类选项随分类收敛
+// 切换分类 → 子分类选项随分类收敛，并自动查询
 watch(category, () => {
   subcategory.value = ''
+  page.value = 1
   refreshSubcategoryOptions()
+  load()
 })
 
 watch([keyword, subsite, subcategory, sort, order], () => {
   page.value = 1
   load()
 })
+
+function resetFilters() {
+  keyword.value = ''
+  station.value = ''
+  subsite.value = ''
+  category.value = ''
+  subcategory.value = ''
+  sort.value = 'id'
+  order.value = 'asc'
+  page.value = 1
+  subsiteOptions.value = []
+  subcategoryOptions.value = []
+  load()
+}
 
 onMounted(() => {
   loadFilters()
@@ -186,6 +204,14 @@ function setSort(col: string) {
               @click="order = order === 'asc' ? 'desc' : 'asc'"
             >
               {{ order === 'asc' ? '↑' : '↓' }}
+            </button>
+          </div>
+          <div class="w-20">
+            <button
+              class="w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm text-gray-600 hover:bg-red-50 hover:text-red-600"
+              @click="resetFilters"
+            >
+              重置
             </button>
           </div>
         </div>
