@@ -59,6 +59,11 @@ export const standards: CostStandard[] = [
     org: '国家标准化管理委员会',
     summary: '《信息技术服务运行维护第7部分：成本度量规范》',
     params: ['运维工作量', '人月费率', '运维级别调整因子'],
+    paramValues: {
+      '运维工作量': '按项目实际测算',
+      '人月费率': '2.3 万元/人月',
+      '运维级别调整因子': 1.0
+    },
   },
   {
     id: 'gb-t-36964',
@@ -70,6 +75,12 @@ export const standards: CostStandard[] = [
     org: '国家标准化管理委员会',
     summary: '《软件工程 软件开发成本度量规范》——功能点法造价评估基础国标',
     params: ['功能点计数', '基准生产率', '人月折算系数', '平均人力成本费率'],
+    paramValues: {
+      '功能点计数': '按项目实际测算',
+      '基准生产率': '8.5 FP/人月',
+      '人月折算系数': 21.75,
+      '平均人力成本费率': '2.3 万元/人月'
+    },
   },
 
   // ===== 省级 =====
@@ -83,6 +94,11 @@ export const standards: CostStandard[] = [
     org: '四川省软件行业协会',
     summary: '《四川省信息化项目费用测算标准》',
     params: ['功能点单价', '基准生产率', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '基准生产率': '8.5 FP/人月',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'hn-xcfb',
@@ -94,6 +110,11 @@ export const standards: CostStandard[] = [
     org: '湖南省财政厅',
     summary: '《湖南省省直单位政府投资信息化项目预算编制与财政评审工作指南(试行)》',
     params: ['功能点单价', '调整因子', '人月费率'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2',
+      '人月费率': '2.3 万元/人月'
+    },
   },
   {
     id: 'bj-db11-1010',
@@ -105,6 +126,11 @@ export const standards: CostStandard[] = [
     org: '北京市市场监督管理局',
     summary: '《信息化项目软件开发费用测算规范》',
     params: ['功能点单价', '基准生产率', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '基准生产率': '8.5 FP/人月',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'gd-yc82',
@@ -116,6 +142,11 @@ export const standards: CostStandard[] = [
     org: '广东省财政厅',
     summary: '《广东省省级政务信息化服务预算编制标准(试行)软件开发服务分册》',
     params: ['功能点单价', '调整因子', '人月费率'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2',
+      '人月费率': '2.3 万元/人月'
+    },
   },
   {
     id: 'cq-t-001',
@@ -127,6 +158,11 @@ export const standards: CostStandard[] = [
     org: '重庆市信息数据行业协会',
     summary: '《政务数字化应用费用测算规范》',
     params: ['功能点单价', '基准生产率', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '基准生产率': '8.5 FP/人月',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'js-budget',
@@ -138,6 +174,10 @@ export const standards: CostStandard[] = [
     org: '江苏省财政厅',
     summary: '江苏省省级政务信息化项目建设支出预算标准（试行）',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'sd-lu1',
@@ -149,6 +189,11 @@ export const standards: CostStandard[] = [
     org: '山东省财政厅、山东省大数据局',
     summary: '《山东省省级政务信息化建设项目支出预算编制标准(试行)》',
     params: ['功能点单价', '调整因子', '人月费率'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2',
+      '人月费率': '2.3 万元/人月'
+    },
   },
   {
     id: 'hb-eb40',
@@ -160,6 +205,10 @@ export const standards: CostStandard[] = [
     org: '湖北省财政厅',
     summary: '《湖北省省级信息化建设项目预算标准》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'sx-jc182',
@@ -171,6 +220,10 @@ export const standards: CostStandard[] = [
     org: '山西省财政厅',
     summary: '《省直部门信息化建设项目支出预算方案编制规范和预算编制标准》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'gx-gz102',
@@ -182,6 +235,10 @@ export const standards: CostStandard[] = [
     org: '广西壮族自治区财政厅',
     summary: '《广西壮族自治区本级政务信息化建设和运维项目预算支出标准》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'fj-spec',
@@ -193,6 +250,10 @@ export const standards: CostStandard[] = [
     org: '福建省数字福建建设领导小组',
     summary: '《福建省政务信息化项目建设造价评估规范》、《福建省政务信息化项目购买服务造价评估规范》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'ah-spec',
@@ -204,6 +265,10 @@ export const standards: CostStandard[] = [
     org: '安徽省数据资源管理局',
     summary: '《安徽省级政务信息化项目概算编制及审核要点(试行)》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'gz-qz7',
@@ -215,6 +280,10 @@ export const standards: CostStandard[] = [
     org: '贵州省财政厅',
     summary: '《贵州省省级政务信息系统项目预算支出标准(试行)》、《软件开发费用测算规范》（DB52/T 1653—2022）',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'hn-hn2026',
@@ -226,6 +295,10 @@ export const standards: CostStandard[] = [
     org: '海南省发展和改革委员会等',
     summary: '《海南省政务信息化项目投资编制标准》（2026 年修订版）',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'jx-db36-2096',
@@ -237,6 +310,10 @@ export const standards: CostStandard[] = [
     org: '江西省市场监督管理局',
     summary: '《江西省省本级信息系统建设及运维服务开支管理暂行办法》（赣信办[2019]41号）、《政务信息化项目软件费用测算规范》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'sn-spec',
@@ -248,6 +325,10 @@ export const standards: CostStandard[] = [
     org: '陕西省工业和信息化厅',
     summary: '《陕西省省级政务信息化项目投资编制指南（建设类）（试行）》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'ha-yu105',
@@ -259,6 +340,10 @@ export const standards: CostStandard[] = [
     org: '河南省财政厅',
     summary: '《关于省级政务信息化建设项目支出预算标准的规定》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'hlj-hb16',
@@ -270,6 +355,10 @@ export const standards: CostStandard[] = [
     org: '黑龙江省财政厅',
     summary: '《黑龙江省省级信息化建设项目预算支出标准》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'nmg-nc1449',
@@ -281,6 +370,10 @@ export const standards: CostStandard[] = [
     org: '内蒙古自治区财政厅',
     summary: '《内蒙古自治区本级政务信息化建设项目预算支出标准（试行）》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'ln-ln54',
@@ -292,6 +385,10 @@ export const standards: CostStandard[] = [
     org: '辽宁省财政厅',
     summary: '《辽宁省省级政务信息化建设项目预算支出标准规定（试行）》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'xz-xz68',
@@ -303,6 +400,10 @@ export const standards: CostStandard[] = [
     org: '西藏自治区财政厅',
     summary: '《西藏自治区本级政务信息化项目 建设和运维费用预算支出标准》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'sh-t108',
@@ -314,6 +415,10 @@ export const standards: CostStandard[] = [
     org: '上海市闵行区中小企业协会',
     summary: '《软件开发项目造价评估规范》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'he-db13-2106',
@@ -325,6 +430,10 @@ export const standards: CostStandard[] = [
     org: '河北省质量技术监督局',
     summary: '《软件开发项目造价评估规范》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'xj-t036',
@@ -336,6 +445,10 @@ export const standards: CostStandard[] = [
     org: '新疆软件行业协会',
     summary: '《定制化软件开发费用测算实施指南》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
 
   // ===== 军用 / 行业 =====
@@ -349,6 +462,11 @@ export const standards: CostStandard[] = [
     org: '中央军委装备发展部',
     summary: '《军用软件计价规范（试行）》（4号文）、GJB 10162-2021《军用软件计价功能项识别方法》',
     params: ['功能项识别', '计价参数', '调整因子'],
+    paramValues: {
+      '功能项识别': '—',
+      '计价参数': '—',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'dl-2015',
@@ -360,6 +478,11 @@ export const standards: CostStandard[] = [
     org: '国家能源局',
     summary: '《电力信息化软件工程度量规范》',
     params: ['功能点计数', '基准生产率', '调整因子'],
+    paramValues: {
+      '功能点计数': '按项目实际测算',
+      '基准生产率': '8.5 FP/人月',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
 
   // ===== 市级 / 区级 =====
@@ -373,6 +496,10 @@ export const standards: CostStandard[] = [
     org: '成都市政务服务管理和网络理政办公室',
     summary: '《成都市智慧蓉城建设项目资金测算评审导则》（2025版）',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'sn-xa',
@@ -384,6 +511,10 @@ export const standards: CostStandard[] = [
     org: '西安市市场监督管理局',
     summary: '《软件开发项目成本测算指南》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'sd-jn',
@@ -395,6 +526,10 @@ export const standards: CostStandard[] = [
     org: '济南市大数据局、济南市财政局',
     summary: '《政务信息化项目软件开发功能点法费用测算指南》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'yn-km',
@@ -406,6 +541,10 @@ export const standards: CostStandard[] = [
     org: '昆明市市场监督管理局',
     summary: '《应用软件定制开发成本测算指南》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'fj-xm',
@@ -417,6 +556,10 @@ export const standards: CostStandard[] = [
     org: '厦门市工业和信息化局、厦门市财政局',
     summary: '《厦门市工业和信息化局 厦门市财政局关于印发厦门市政务信息化项目造价评估规范（试行）的通知》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'hn-cs',
@@ -428,6 +571,10 @@ export const standards: CostStandard[] = [
     org: '长沙市财政评审中心',
     summary: '《长沙市财政评审中心政府投资信息化项目评审指南》、《信息化项目结算评审工作指引(试行)》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'hb-yz',
@@ -439,6 +586,10 @@ export const standards: CostStandard[] = [
     org: '宜昌市数据局',
     summary: '《宜昌市市级政务信息化项目支出定额标准（试行）》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'hn-yy',
@@ -450,6 +601,10 @@ export const standards: CostStandard[] = [
     org: '益阳市财政局',
     summary: '《益阳市市本级政府投资信息化项目预算编制与财政评审工作指南（试行）》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'hn-hy',
@@ -461,6 +616,10 @@ export const standards: CostStandard[] = [
     org: '衡阳市财政局',
     summary: '《衡阳市市本级政府投资信息化项目评审指南（试行）》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'hn-cd',
@@ -472,6 +631,10 @@ export const standards: CostStandard[] = [
     org: '常德市行政审批服务局',
     summary: '《市级信息化建设项目初步设计方案编制规范和支出预算编制标准（试行）》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'gd-dg',
@@ -483,6 +646,10 @@ export const standards: CostStandard[] = [
     org: '东莞市政府投资项目评审中心',
     summary: '《东莞市政府投资信息化项目造价指南》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'jx-gz',
@@ -494,6 +661,10 @@ export const standards: CostStandard[] = [
     org: '赣州市财政局、赣州市政务服务和数据管理局',
     summary: '《赣州市本级政府投资数字化项目费用编制指南》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'zj-ls',
@@ -505,6 +676,10 @@ export const standards: CostStandard[] = [
     org: '丽水市质量协会',
     summary: '《信息系统商用密码应用成本测算指南》',
     params: ['密码应用成本', '调整因子'],
+    paramValues: {
+      '密码应用成本': '—',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'gd-qy',
@@ -516,6 +691,10 @@ export const standards: CostStandard[] = [
     org: '清远市政务服务和数据管理局',
     summary: '《清远市市级政务信息化服务项目立项审批细则(试行)》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'gd-fs',
@@ -527,6 +706,10 @@ export const standards: CostStandard[] = [
     org: '佛山市财政局',
     summary: '佛山市政务信息化项目概算编制指南（2023年版）',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'zj-qz',
@@ -538,6 +721,10 @@ export const standards: CostStandard[] = [
     org: '衢州市财政局',
     summary: '《衢州市市本级数字化项目建设支出预算限额标准(试行)》',
     params: ['功能点单价', '限额标准'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '限额标准': '按官方发布文件'
+    },
   },
   {
     id: 'zj-wz',
@@ -549,6 +736,10 @@ export const standards: CostStandard[] = [
     org: '温州市市场监督管理局',
     summary: '《政务信息化项目软件开发费用测算规范》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'gx-lz',
@@ -560,6 +751,10 @@ export const standards: CostStandard[] = [
     org: '柳州市财政局',
     summary: '《柳州市本级信息化建设项目预算支出标准（试行）》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'js-xz',
@@ -571,6 +766,10 @@ export const standards: CostStandard[] = [
     org: '徐州市财政局',
     summary: '《徐州市市级政务信息化建设及运行维护项目支出预算标准（试行）》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'js-yc',
@@ -582,6 +781,10 @@ export const standards: CostStandard[] = [
     org: '盐城市财政局',
     summary: '盐城市信息化项目造价评估报告编制指南（2024）',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'sn-yl',
@@ -593,6 +796,10 @@ export const standards: CostStandard[] = [
     org: '榆林市委网信办、榆林市智慧局',
     summary: '《榆林市信息化建设类项目投资编制指南》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'js-wx',
@@ -604,6 +811,10 @@ export const standards: CostStandard[] = [
     org: '无锡市政府投资评审中心',
     summary: '《无锡市市级政务信息化建设及运行维护项目预算支出标准(2024修订版)》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'sc-nc',
@@ -615,6 +826,10 @@ export const standards: CostStandard[] = [
     org: '南充市财政局',
     summary: '根据政府申请公开资料设置相关数值',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'sx-jc',
@@ -626,6 +841,10 @@ export const standards: CostStandard[] = [
     org: '晋城市财政局、晋城市行政审批服务管理局、晋城市大数据应用局',
     summary: '《晋城市信息化建设项目方案和预算编制规范（试行）》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'sx-ll',
@@ -637,6 +856,10 @@ export const standards: CostStandard[] = [
     org: '吕梁市财政局',
     summary: '《市直部门信息化建设项目支出预算方案编制规范和预算编制标准（试行）》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'sx-cz',
@@ -648,6 +871,10 @@ export const standards: CostStandard[] = [
     org: '长治市财政局',
     summary: '《长治市市直部门政务信息化建设项目预算编制规范和预算编制标准(试行)》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'nmg-erdos',
@@ -659,6 +886,10 @@ export const standards: CostStandard[] = [
     org: '鄂尔多斯市政务服务与数据管理局',
     summary: '《鄂尔多斯市本级政务信息化建设项目预算支出标准（试行）》',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'hn-cs-xc',
@@ -670,6 +901,10 @@ export const standards: CostStandard[] = [
     org: '长沙市财政评审中心',
     summary: '《长沙市政府投资建设信息化项目信创适配预算支出标准》',
     params: ['信创适配单价', '调整因子'],
+    paramValues: {
+      '信创适配单价': '—',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
 
   // ===== 信创适配 =====
@@ -683,6 +918,10 @@ export const standards: CostStandard[] = [
     org: '北京软件造价评估技术创新联盟',
     summary: '《信息技术应用创新信息系统适配改造成本度量》',
     params: ['适配改造单价', '调整因子'],
+    paramValues: {
+      '适配改造单价': '—',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'xc-sc-db',
@@ -694,6 +933,10 @@ export const standards: CostStandard[] = [
     org: '四川省软件行业协会',
     summary: '《四川省信息技术应用创新项目费用测算标准》（数据库适配）',
     params: ['数据库适配单价', '调整因子'],
+    paramValues: {
+      '数据库适配单价': '—',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'xc-sc-code',
@@ -705,6 +948,10 @@ export const standards: CostStandard[] = [
     org: '四川省软件行业协会',
     summary: '《四川省信息技术应用创新项目费用测算标准》（代码重构）',
     params: ['代码重构单价', '调整因子'],
+    paramValues: {
+      '代码重构单价': '—',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'xc-js-db32',
@@ -716,6 +963,10 @@ export const standards: CostStandard[] = [
     org: '江苏省市场监督管理局',
     summary: 'DB32/T 4935—2024 信息技术应用创新软件适配改造成本评估规范',
     params: ['适配改造单价', '调整因子'],
+    paramValues: {
+      '适配改造单价': '—',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'xc-nb-t001',
@@ -727,6 +978,10 @@ export const standards: CostStandard[] = [
     org: '宁波市计算机学会',
     summary: '《信息技术应用创新软件成本测算规范》（信创）',
     params: ['信创软件单价', '调整因子'],
+    paramValues: {
+      '信创软件单价': '—',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'xc-wx-t001',
@@ -738,6 +993,10 @@ export const standards: CostStandard[] = [
     org: '无锡市信息化协会',
     summary: '《软件及信息化工程造价测算规范 V1.0》（团标）',
     params: ['功能点单价', '调整因子'],
+    paramValues: {
+      '功能点单价': '1100 元/FP',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'xc-bj-sql',
@@ -749,6 +1008,10 @@ export const standards: CostStandard[] = [
     org: '北京软件造价评估技术创新联盟',
     summary: '《信息技术应用创新信息系统适配改造成本度量》（SQL 语法适配）',
     params: ['SQL适配单价', '调整因子'],
+    paramValues: {
+      'SQL适配单价': '—',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
 
   // ===== 运维费用 =====
@@ -762,6 +1025,10 @@ export const standards: CostStandard[] = [
     org: '山东省财政厅、山东省大数据局',
     summary: '《山东省省级政务信息化运维项目支出预算编制标准（试行）》',
     params: ['运维单价', '调整因子'],
+    paramValues: {
+      '运维单价': '—',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'gd-yc82-yw',
@@ -773,6 +1040,10 @@ export const standards: CostStandard[] = [
     org: '广东省财政厅',
     summary: '《广东省省级政务信息化服务预算编制标准(试行)运维服务分册》',
     params: ['运维单价', '调整因子'],
+    paramValues: {
+      '运维单价': '—',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'gx-gz102-yw',
@@ -784,6 +1055,10 @@ export const standards: CostStandard[] = [
     org: '广西壮族自治区财政厅',
     summary: '广西壮族自治区财政厅关于印发《广西壮族自治区本级政务信息化建设和运维项目预算支出标准》的通知（运维部分）',
     params: ['运维单价', '调整因子'],
+    paramValues: {
+      '运维单价': '—',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'sx-db14-2163',
@@ -795,6 +1070,10 @@ export const standards: CostStandard[] = [
     org: '山西省市场监督管理局',
     summary: '《信息化项目软件运维费用测算指南》',
     params: ['运维单价', '调整因子'],
+    paramValues: {
+      '运维单价': '—',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'js-xz-yw',
@@ -806,6 +1085,10 @@ export const standards: CostStandard[] = [
     org: '徐州市财政局',
     summary: '《徐州市市级政务信息化建设及运行维护项目支出预算标准（试行）》（运维部分）',
     params: ['运维单价', '调整因子'],
+    paramValues: {
+      '运维单价': '—',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'js-wx-yw',
@@ -817,6 +1100,10 @@ export const standards: CostStandard[] = [
     org: '无锡市信息化协会',
     summary: '《软件及信息化工程造价测算规范 V1.0》（运维部分）',
     params: ['运维单价', '调整因子'],
+    paramValues: {
+      '运维单价': '—',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
   {
     id: 'gd-fs-yw',
@@ -828,5 +1115,9 @@ export const standards: CostStandard[] = [
     org: '佛山市财政局',
     summary: '佛山市政务信息化项目概算编制指南（2023年版）（运维部分）',
     params: ['运维单价', '调整因子'],
+    paramValues: {
+      '运维单价': '—',
+      '调整因子': '0.8 ~ 1.2'
+    },
   },
 ]
