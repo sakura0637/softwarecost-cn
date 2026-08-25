@@ -149,7 +149,7 @@ CREATE INDEX IF NOT EXISTS idx_sa_std ON standard_attachments(standard_id);
 `)
 
 // 设备价格库种子版本：seed 结构变化(加 subcategory / 重新解析 / 修正总调中心 subsite / 修正跨表求和公式求值)时 +1，触发自动重灌
-const DEVICE_SEED_VERSION = '5'
+const DEVICE_SEED_VERSION = '6'
 // 兼容老库：补 subcategory 列（已存在则忽略）
 try {
   db.exec('ALTER TABLE device_prices ADD COLUMN subcategory TEXT')

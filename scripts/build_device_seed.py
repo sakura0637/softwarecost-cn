@@ -78,9 +78,9 @@ def _eval_formula(formula, cur_sheet, wb_frm, depth=0):
                                 v = _cell_val(wb_frm, sa, cc, rr, depth)
                                 if v: tot += v
             else:
-                rm = re.match(r'^(?:([^!]+?)!)?([A-Z]+\d+)$', part)
+                rm = re.match(r"^(?:('[^']+'|[A-Za-z0-9_\u4e00-\u9fa5\s]+)!)?([A-Z]+\d+)$", part)
                 if rm:
-                    sh = rm.group(1).strip().strip("'") if rm.group(1) else cur_sheet
+                    sh = rm.group(1).strip().strip("'\"") if rm.group(1) else cur_sheet
                     c, r = _ref_parts(rm.group(2))
                     v = _cell_val(wb_frm, sh, c, r, depth)
                     if v: tot += v
@@ -88,19 +88,22 @@ def _eval_formula(formula, cur_sheet, wb_frm, depth=0):
 
     expr = re.sub(r'SUM\(([^)]*)\)', sum_rep, expr, flags=re.I)
 
+    # Sheet 名只允许中文/英文/数字/下划线/空格，避免把运算符（如 +）吞进 sheet 名
+    REF_RE = re.compile(r"(?:('[^']+'|[A-Za-z0-9_\u4e00-\u9fa5\s]+)!)?([A-Z]+\d+)")
+
     def rep(m):
-        sheet_part = m.group(1)  # 可能含 ! 的 sheet 前缀
+        sheet_part = m.group(1)
         cell = m.group(2)
         sheet = cur_sheet
         if sheet_part:
-            sheet = sheet_part.rstrip('!').strip().strip("'")
+            sheet = sheet_part.strip().strip("'\"")
         c, r = _ref_parts(cell)
         if not c:
             return '0'
         v = _cell_val(wb_frm, sheet, c, r, depth)
         return str(v if v is not None else 0)
 
-    expr = re.sub(r"((?:[^!()]+?)!)?([A-Z]+\d+)", rep, expr)
+    expr = REF_RE.sub(rep, expr)
     try:
         return float(eval(expr, {'__builtins__': {}}, {}))
     except Exception:
