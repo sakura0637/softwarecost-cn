@@ -5,7 +5,9 @@ export default defineEventHandler((event) => {
   const q = getQuery(event)
   const keyword = String(q.q || '').trim()
   const station = String(q.station || '').trim()
+  const subsite = String(q.subsite || '').trim()
   const category = String(q.category || '').trim()
+  const subcategory = String(q.subcategory || '').trim()
   const sort = String(q.sort || 'id')
   const order = String(q.order || 'asc').toLowerCase() === 'desc' ? 'DESC' : 'ASC'
   const page = Math.max(1, parseInt(String(q.page || '1')) || 1)
@@ -22,9 +24,17 @@ export default defineEventHandler((event) => {
     where.push('station = ?')
     params.push(station)
   }
+  if (subsite) {
+    where.push('subsite = ?')
+    params.push(subsite)
+  }
   if (category) {
     where.push('category = ?')
     params.push(category)
+  }
+  if (subcategory) {
+    where.push('subcategory = ?')
+    params.push(subcategory)
   }
   const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : ''
 

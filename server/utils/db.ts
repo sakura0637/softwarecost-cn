@@ -119,8 +119,9 @@ db.exec(`
 CREATE TABLE IF NOT EXISTS device_prices (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   station      VARCHAR(32)  NOT NULL,   -- 站(石家庄/沧州/...)
-  subsite      VARCHAR(64),             -- 管理子站(sheet名)
-  category     VARCHAR(32),             -- 分类
+  subsite      VARCHAR(64),             -- 管理子站(sheet名)；全站汇总为「全站设备汇总」
+  category     VARCHAR(32),             -- 顶层分类(工程监控/视频监视/计算机网络/通信/安全监测/实体环境...)
+  subcategory  VARCHAR(64),             -- 子分类(硬件设备/软件/控制专网/通信传输/通信交换...)
   name         VARCHAR(255) NOT NULL,   -- 设备名称
   unit         VARCHAR(16),             -- 单位
   brand_model  VARCHAR(255),            -- 品牌型号
@@ -147,19 +148,41 @@ CREATE TABLE IF NOT EXISTS standard_attachments (
 CREATE INDEX IF NOT EXISTS idx_sa_std ON standard_attachments(standard_id);
 `)
 
-// 首次启动灌入种子数据（幂等：表非空则跳过，避免重复灌入）
-const dpCount = (db.prepare('SELECT COUNT(*) AS c FROM device_prices').get() as { c: number }).c
-if (dpCount === 0 && existsSync(SEED_FILE)) {
-  const seed: any[] = JSON.parse(readFileSync(SEED_FILE, 'utf-8'))
+// 设备价格库种子版本：seed 结构变化(加 subcategory / 重新解析 / 修正总调中心 subsite)时 +1，触发自动重灌
+const DEVICE_SEED_VERSION = '4'
+// 兼容老库：补 subcategory 列（已存在则忽略）
+try {
+  db.exec('ALTER TABLE device_prices ADD COLUMN subcategory TEXT')
+} catch {
+  /* 列已存在 */
+}
+
+// 种子版本化自动重灌：版本不符 或 行数与 seed 不一致 → 清空 device_prices 重新灌入，
+// 避免在服务器上手动执行 DELETE（部署新 seed 后重启即生效）。
+db.exec('CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT)')
+const curVerRow = db.prepare('SELECT v FROM kv WHERE k = ?').get('device_seed_version') as { v: string } | undefined
+const seedExists = existsSync(SEED_FILE)
+let seedRows: any[] = []
+if (seedExists) {
+  try { seedRows = JSON.parse(readFileSync(SEED_FILE, 'utf-8')) } catch { seedRows = [] }
+}
+const curCount = (db.prepare('SELECT COUNT(*) AS c FROM device_prices').get() as { c: number }).c
+const needReseed = seedRows.length > 0 && (
+  !curVerRow || curVerRow.v !== DEVICE_SEED_VERSION || curCount !== seedRows.length
+)
+if (needReseed) {
   const ins = db.prepare(
-    'INSERT INTO device_prices (station, subsite, category, name, unit, brand_model, qty, unit_price, total_price, remark) VALUES (?,?,?,?,?,?,?,?,?,?)'
+    'INSERT INTO device_prices (station, subsite, category, subcategory, name, unit, brand_model, qty, unit_price, total_price, remark) VALUES (?,?,?,?,?,?,?,?,?,?,?)'
   )
   const tx = db.transaction((rows: any[]) => {
+    db.exec('DELETE FROM device_prices')
     for (const r of rows) {
-      ins.run(r.station, r.subsite, r.category, r.name, r.unit, r.brand_model, r.qty, r.unit_price, r.total_price, r.remark)
+      ins.run(r.station, r.subsite, r.category, r.subcategory ?? null, r.name, r.unit, r.brand_model, r.qty, r.unit_price, r.total_price, r.remark)
     }
   })
-  tx(seed)
+  tx(seedRows)
+  db.prepare('INSERT OR REPLACE INTO kv (k, v) VALUES (?, ?)').run('device_seed_version', DEVICE_SEED_VERSION)
+  console.log(`[seed] device_prices 已重灌 ${seedRows.length} 条 (v${DEVICE_SEED_VERSION})`)
 }
 
 export default db
