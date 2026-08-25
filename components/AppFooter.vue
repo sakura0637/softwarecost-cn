@@ -32,7 +32,7 @@ const year = new Date().getFullYear()
           <ul class="space-y-2 text-sm text-gray-500">
             <li>行业基准数据</li>
             <li>各省市计价数据</li>
-            <li>设备价格数据库</li>
+            <li><NuxtLink to="/devices" class="transition-colors hover:text-gray-900">设备价格数据库</NuxtLink></li>
             <li>自定义标准</li>
           </ul>
         </div>

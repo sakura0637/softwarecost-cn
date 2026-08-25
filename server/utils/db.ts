@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3'
 import { dirname, join } from 'node:path'
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 // 本地 SQLite 文件库，与 172.22.2.203 上的党建库 pb_show_init 零耦合、零牵连
@@ -88,5 +88,47 @@ CREATE TABLE IF NOT EXISTS function_points (
 CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_id);
 CREATE INDEX IF NOT EXISTS idx_fp_project    ON function_points(project_id);
 `)
+
+// ── 设备价格库（种子数据：server/seed/device_prices_seed.json）──────────
+// 运行时路径解析：db.ts 位于 <ROOT>/server/utils，故 seed 在 <ROOT>/server/seed
+const SEED_DIR = (() => {
+  const here = dirname(fileURLToPath(import.meta.url))
+  const byMeta = here.replace(/[\\/]server[\\/]utils$/, '')
+  return byMeta && byMeta !== here ? join(byMeta, 'server', 'seed') : join(process.cwd(), 'server', 'seed')
+})()
+const SEED_FILE = join(SEED_DIR, 'device_prices_seed.json')
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS device_prices (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  station      VARCHAR(32)  NOT NULL,   -- 站(石家庄/沧州/...)
+  subsite      VARCHAR(64),             -- 管理子站(sheet名)
+  category     VARCHAR(32),             -- 分类
+  name         VARCHAR(255) NOT NULL,   -- 设备名称
+  unit         VARCHAR(16),             -- 单位
+  brand_model  VARCHAR(255),            -- 品牌型号
+  qty          REAL,                    -- 数量
+  unit_price   REAL,                    -- 单价(元)
+  total_price  REAL,                    -- 合价(元)
+  remark       TEXT                     -- 备注
+);
+CREATE INDEX IF NOT EXISTS idx_dp_station  ON device_prices(station);
+CREATE INDEX IF NOT EXISTS idx_dp_category ON device_prices(category);
+`)
+
+// 首次启动灌入种子数据（幂等：表非空则跳过，避免重复灌入）
+const dpCount = (db.prepare('SELECT COUNT(*) AS c FROM device_prices').get() as { c: number }).c
+if (dpCount === 0 && existsSync(SEED_FILE)) {
+  const seed: any[] = JSON.parse(readFileSync(SEED_FILE, 'utf-8'))
+  const ins = db.prepare(
+    'INSERT INTO device_prices (station, subsite, category, name, unit, brand_model, qty, unit_price, total_price, remark) VALUES (?,?,?,?,?,?,?,?,?,?)'
+  )
+  const tx = db.transaction((rows: any[]) => {
+    for (const r of rows) {
+      ins.run(r.station, r.subsite, r.category, r.name, r.unit, r.brand_model, r.qty, r.unit_price, r.total_price, r.remark)
+    }
+  })
+  tx(seed)
+}
 
 export default db

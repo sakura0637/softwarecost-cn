@@ -7,6 +7,7 @@ const { token, user, logout } = useAuth()
 const navItems = [
   { label: '首页', to: '/' },
   { label: '造价标准', to: '/standards' },
+  { label: '设备价格库', to: '/devices' },
   { label: '行业基准数据分析', to: '/industry' },
   { label: '省市计价数据分析', to: '/city' },
   { label: '工作台', to: '/projects' },
