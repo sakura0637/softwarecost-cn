@@ -11,6 +11,7 @@ export interface CostStandard {
   org: string
   summary: string
   params: string[]
+  paramValues?: Record<string, string | number>
 }
 
 export const standards: CostStandard[] = [
@@ -25,6 +26,12 @@ export const standards: CostStandard[] = [
     org: '北京软件造价评估技术创新联盟',
     summary: '《中国软件行业基准数据》（CSBMK-202510）、《软件造价评估实施规程》（TBSCEA 002-2024）',
     params: ['基准生产率', '人月折算系数', '平均人力成本费率', '功能点调整因子'],
+    paramValues: {
+      '基准生产率': '8.5 FP/人月',
+      '人月折算系数': 21.75,
+      '平均人力成本费率': '2.3 万元/人月',
+      '功能点调整因子': '0.8 ~ 1.2',
+    },
   },
   {
     id: 'csia-ssmbk',
@@ -36,6 +43,11 @@ export const standards: CostStandard[] = [
     org: '中国软件行业协会软件造价分会',
     summary: '中国软件行业协会软件造价分会基准数据报告',
     params: ['基准生产率', '人月折算系数', '功能点单价'],
+    paramValues: {
+      '基准生产率': '8.5 FP/人月',
+      '人月折算系数': 21.75,
+      '功能点单价': '1100 元/FP',
+    },
   },
   {
     id: 'gb-t-28827',

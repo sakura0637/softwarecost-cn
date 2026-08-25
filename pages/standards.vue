@@ -161,8 +161,11 @@ const stats = computed(() => ({
             </dl>
             <div class="mt-4">
               <h4 class="mb-2 text-sm font-semibold text-gray-900">核心参数</h4>
-              <div class="flex flex-wrap gap-2">
-                <span v-for="p in selectedStandard.params" :key="p" class="rounded-md bg-blue-50 px-2.5 py-1 text-xs text-primary">{{ p }}</span>
+              <div class="space-y-2">
+                <div v-for="p in selectedStandard.params" :key="p" class="flex items-center justify-between rounded-lg bg-gray-50 px-3 py-2 text-sm">
+                  <span class="text-gray-500">{{ p }}</span>
+                  <span class="font-medium text-gray-700">{{ selectedStandard.paramValues?.[p] ?? '—' }}</span>
+                </div>
               </div>
             </div>
             <div class="mt-6 rounded-lg bg-gray-50 p-4 text-xs text-gray-400">
