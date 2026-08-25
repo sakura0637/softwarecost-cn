@@ -69,7 +69,7 @@ const valueProps = [
       <div class="container-custom relative py-24 text-center md:py-32">
         <span class="inline-block rounded-full bg-white/15 px-4 py-1.5 text-sm font-medium text-white backdrop-blur">基于 AI 大模型的软件造价评估工具</span>
         <h1 class="mt-6 text-4xl font-bold leading-tight text-white md:text-6xl">
-          软件造价喵
+          水网数智造价系统
         </h1>
         <p class="mx-auto mt-6 max-w-2xl text-lg leading-relaxed text-blue-100 md:text-xl">
           基于 AI 大模型的软件造价及 IT 设备询价工具。<br />

@@ -36,7 +36,7 @@ const handleLogin = async () => {
     <div class="w-full max-w-md">
       <div class="mb-8 text-center">
         <div class="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-xl bg-primary text-2xl font-bold text-white">造</div>
-        <h1 class="text-2xl font-bold text-gray-900">登录软件造价喵</h1>
+        <h1 class="text-2xl font-bold text-gray-900">登录水网数智造价系统</h1>
         <p class="mt-1 text-sm text-gray-500">基于 AI 大模型的软件造价评估工具</p>
       </div>
 

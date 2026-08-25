@@ -25,7 +25,7 @@ const handleLogout = () => {
       <!-- Logo -->
       <NuxtLink to="/" class="flex items-center gap-2">
         <div class="flex h-9 w-9 items-center justify-center rounded-lg bg-primary text-lg font-bold text-white">造</div>
-        <span class="text-xl font-bold text-gray-900">软件造价喵</span>
+        <span class="text-xl font-bold text-gray-900">水网数智造价系统</span>
       </NuxtLink>
 
       <!-- 桌面导航 -->

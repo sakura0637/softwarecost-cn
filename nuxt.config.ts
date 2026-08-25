@@ -18,7 +18,7 @@ export default defineNuxtConfig({
   },
   app: {
     head: {
-      title: '软件造价喵 · 基于AI大模型的软件造价评估工具',
+      title: '水网数智造价系统 · 基于AI大模型的软件造价评估工具',
       meta: [
         { charset: 'utf-8' },
         { name: 'viewport', content: 'width=device-width, initial-scale=1' },

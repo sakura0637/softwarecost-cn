@@ -10,7 +10,7 @@ const year = new Date().getFullYear()
         <div>
           <div class="mb-4 flex items-center gap-2">
             <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-sm font-bold text-white">造</div>
-            <span class="text-lg font-bold text-gray-900">软件造价喵</span>
+            <span class="text-lg font-bold text-gray-900">水网数智造价系统</span>
           </div>
           <p class="text-sm leading-relaxed text-gray-500">
             基于 AI 大模型的软件造价评估及软硬件设备询价工具，全面支持国内全量行业基准数据与各省市造价标准。
@@ -49,11 +49,7 @@ const year = new Date().getFullYear()
       </div>
 
       <div class="mt-8 flex flex-col items-center justify-between gap-4 border-t border-gray-100 pt-8 text-sm text-gray-400 md:flex-row">
-        <p>© {{ year }} 软件造价喵 · 演示版 · 数据整理自公开资料</p>
-        <p class="flex items-center gap-4">
-          <span>蜀ICP备2024055643号</span>
-          <span>IP地址位置数据由纯真CZ88提供支持</span>
-        </p>
+        <p>© {{ year }} 水网数智造价系统 · 演示版 · 数据整理自公开资料</p>
       </div>
     </div>
   </footer>
