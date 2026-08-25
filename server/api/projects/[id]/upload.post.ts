@@ -43,7 +43,7 @@ export default defineEventHandler(async (event) => {
       ok: true,
       document_path: fullPath,
       rawTextLength: rawText.length,
-      rawTextPreview: rawText.slice(0, 600)
+      rawTextPreview: rawText
     }
   }
 
@@ -57,6 +57,6 @@ export default defineEventHandler(async (event) => {
   return {
     ok: true,
     rawTextLength: text.length,
-    rawTextPreview: text.slice(0, 600)
+    rawTextPreview: text
   }
 })
