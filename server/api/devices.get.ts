@@ -1,4 +1,4 @@
-import db from '../../utils/db'
+import db from '../utils/db'
 import { getQuery } from 'h3'
 
 export default defineEventHandler((event) => {

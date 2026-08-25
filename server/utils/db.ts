@@ -90,11 +90,23 @@ CREATE INDEX IF NOT EXISTS idx_fp_project    ON function_points(project_id);
 `)
 
 // ── 设备价格库（种子数据：server/seed/device_prices_seed.json）──────────
-// 运行时路径解析：db.ts 位于 <ROOT>/server/utils，故 seed 在 <ROOT>/server/seed
+// 运行时路径解析（Nitro 打包后 import.meta.url 指向 .output/server/chunks，
+// 正则匹配失败，故兜底到 cwd 与 DB_DIR，确保 dev/prod 均能定位 seed）：
+//   1) import.meta.url → <ROOT>/server/seed（源码态）
+//   2) DB_DIR(项目根/data) 上一级 → <ROOT>/server/seed（生产态，最可靠）
+//   3) process.cwd()/server/seed（兜底）
 const SEED_DIR = (() => {
+  const candidates: string[] = []
   const here = dirname(fileURLToPath(import.meta.url))
   const byMeta = here.replace(/[\\/]server[\\/]utils$/, '')
-  return byMeta && byMeta !== here ? join(byMeta, 'server', 'seed') : join(process.cwd(), 'server', 'seed')
+  if (byMeta && byMeta !== here) candidates.push(join(byMeta, 'server', 'seed'))
+  if (process.env.DB_DIR) candidates.push(join(process.env.DB_DIR, '..', 'server', 'seed'))
+  candidates.push(join(process.cwd(), 'server', 'seed'))
+  for (const d of candidates) {
+    if (existsSync(d)) return d
+  }
+  // 都不存在时返回最可能在生产态命中的候选（DB_DIR 优先）
+  return candidates[candidates.length - 1]
 })()
 const SEED_FILE = join(SEED_DIR, 'device_prices_seed.json')
 
