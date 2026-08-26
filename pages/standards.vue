@@ -1,9 +1,14 @@
 <script setup lang="ts">
-// 造价标准库页面
-import { standards, type CostStandard } from '~/composables/useStandards'
+// 造价标准库页面：标准数据从数据库读取（/api/standards），失败回退静态数据
+import { ref, computed, onMounted, reactive } from 'vue'
+import { standards as fallbackStandards, type CostStandard } from '~/composables/useStandards'
 import { useAuth } from '~/composables/useAuth'
 
 const { token, api } = useAuth()
+
+// 标准列表（运行时权威来自库；接口失败则用静态 fallback）
+const standards = ref<CostStandard[]>([])
+const loadingStandards = ref(false)
 
 const searchQuery = ref('')
 const selectedCategory = ref('全部')
@@ -13,7 +18,7 @@ const selectedAttachment = ref<'all' | 'has' | 'none'>('all')
 // 各标准附件计数（来自后台汇总接口），驱动「是否含附件」筛选与卡片角标
 const attachSummary = ref<Record<string, number>>({})
 
-const categories = computed(() => ['全部', ...Array.from(new Set(standards.map(s => s.category)))])
+const categories = computed(() => ['全部', ...Array.from(new Set(standards.value.map(s => s.category)))])
 const levels = [
   { key: '全部', label: '全部级别' },
   { key: 'national', label: '国家级' },
@@ -32,7 +37,7 @@ const levelLabelMap: Record<string, string> = {
 }
 
 const filteredStandards = computed(() => {
-  return standards.filter((s) => {
+  return standards.value.filter((s) => {
     const matchSearch = searchQuery.value === ''
       || s.name.includes(searchQuery.value)
       || s.code.includes(searchQuery.value)
@@ -49,6 +54,18 @@ const filteredStandards = computed(() => {
   })
 })
 
+async function loadStandards() {
+  loadingStandards.value = true
+  try {
+    const res: any = await $fetch('/api/standards')
+    standards.value = res.standards || []
+  } catch {
+    standards.value = fallbackStandards
+  } finally {
+    loadingStandards.value = false
+  }
+}
+
 // 拉取各标准附件计数（公开接口）
 async function loadSummary() {
   try {
@@ -58,7 +75,7 @@ async function loadSummary() {
     attachSummary.value = {}
   }
 }
-onMounted(loadSummary)
+onMounted(() => { loadSummary(); loadStandards() })
 
 const selectedStandard = ref<CostStandard | null>(null)
 const attachments = ref<any[]>([])
@@ -70,7 +87,6 @@ const previewAttachment = ref<any | null>(null)
 const PREVIEWABLE = (mime: string | null | undefined) =>
   !!mime && (mime === 'application/pdf' || mime.startsWith('image/') || mime.startsWith('text/'))
 function openPreview(a: any) {
-  // 所有附件都可点开预览浮层；可内联渲染的（PDF/图片/文本）走 iframe，其余在浮层内提示下载
   previewAttachment.value = a
 }
 function closePreview() {
@@ -136,13 +152,79 @@ async function onDelete(fid: number) {
 }
 
 const stats = computed(() => ({
-  total: standards.length,
-  national: standards.filter(s => s.level === 'national').length,
-  provincial: standards.filter(s => s.level === 'provincial').length,
-  municipal: standards.filter(s => s.level === 'municipal').length,
-  industry: standards.filter(s => s.level === 'industry').length,
-  military: standards.filter(s => s.level === 'military').length,
+  total: standards.value.length,
+  national: standards.value.filter(s => s.level === 'national').length,
+  provincial: standards.value.filter(s => s.level === 'provincial').length,
+  municipal: standards.value.filter(s => s.level === 'municipal').length,
+  industry: standards.value.filter(s => s.level === 'industry').length,
+  military: standards.value.filter(s => s.level === 'military').length,
 }))
+
+// ===== 管理标准（需登录） =====
+const showAdmin = ref(false)
+const editing = ref<CostStandard | null>(null) // 编辑中的标准；null 表示新增表单
+const form = reactive({
+  id: '', category: '', name: '', code: '', region: '', level: 'industry', org: '', summary: '',
+  paramsText: '', valuesText: '',
+})
+const saving = ref(false)
+
+function openNew() {
+  editing.value = null
+  Object.assign(form, { id: '', category: '', name: '', code: '', region: '', level: 'industry', org: '', summary: '', paramsText: '', valuesText: '' })
+  showAdmin.value = true
+}
+function openEdit(s: CostStandard) {
+  editing.value = s
+  Object.assign(form, {
+    id: s.id, category: s.category || '', name: s.name, code: s.code || '', region: s.region || '',
+    level: s.level || 'industry', org: s.org || '', summary: s.summary || '',
+    paramsText: (s.params || []).join('\n'),
+    valuesText: Object.entries(s.paramValues || {}).map(([k, v]) => `${k}: ${v}`).join('\n'),
+  })
+  showAdmin.value = true
+}
+async function saveStandard() {
+  if (!form.id.trim() || !form.name.trim()) { alert('id 与 name 必填'); return }
+  const params = form.paramsText.split('\n').map(x => x.trim()).filter(Boolean)
+  const paramValues: Record<string, string> = {}
+  for (const line of form.valuesText.split('\n')) {
+    const idx = line.indexOf(':')
+    if (idx > 0) {
+      const k = line.slice(0, idx).trim()
+      const v = line.slice(idx + 1).trim()
+      if (k) paramValues[k] = v
+    }
+  }
+  const body = {
+    id: form.id.trim(), category: form.category, name: form.name, code: form.code, region: form.region,
+    level: form.level, org: form.org, summary: form.summary, params, paramValues,
+  }
+  saving.value = true
+  try {
+    if (editing.value) {
+      await api(`/api/standards/${editing.value.id}`, { method: 'PUT', body })
+    } else {
+      await api('/api/standards', { method: 'POST', body })
+    }
+    await loadStandards()
+    showAdmin.value = false
+  } catch (e: any) {
+    alert(e?.data?.statusMessage || '保存失败')
+  } finally {
+    saving.value = false
+  }
+}
+async function deleteStandard(s: CostStandard) {
+  if (!confirm(`确定删除标准「${s.name}」？其附件也会一并删除。`)) return
+  try {
+    await api(`/api/standards/${s.id}`, { method: 'DELETE' })
+    await loadStandards()
+    await loadSummary()
+  } catch (e: any) {
+    alert(e?.data?.statusMessage || '删除失败')
+  }
+}
 </script>
 
 <template>
@@ -167,6 +249,9 @@ const stats = computed(() => ({
     <!-- 筛选区 -->
     <section class="container-custom -mt-8">
       <div class="rounded-xl bg-white p-6 shadow-card">
+        <div v-if="token" class="mb-3 flex justify-end">
+          <button class="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700" @click="showAdmin = true">管理标准</button>
+        </div>
         <div class="flex flex-col gap-4 lg:flex-row lg:items-center">
           <div class="flex-1">
             <input
@@ -376,6 +461,72 @@ const stats = computed(() => ({
               </template>
               <div v-else class="flex h-full items-center justify-center text-sm text-gray-500">
                 该文件格式暂不支持在线预览，请点击右上角「下载」查看。
+              </div>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
+    <!-- 管理标准浮层（需登录） -->
+    <Teleport to="body">
+      <Transition name="modal">
+        <div
+          v-if="showAdmin"
+          class="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4"
+          @click.self="showAdmin = false"
+        >
+          <div class="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl bg-white p-6 shadow-xl">
+            <div class="mb-4 flex items-center justify-between">
+              <h3 class="text-xl font-bold text-gray-900">管理标准（{{ standards.length }}）</h3>
+              <div class="flex gap-2">
+                <button v-if="!editing" class="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700" @click="openNew">+ 新增标准</button>
+                <button class="text-gray-400 hover:text-gray-600" @click="showAdmin = false">✕</button>
+              </div>
+            </div>
+
+            <!-- 列表 -->
+            <div v-if="!editing" class="space-y-2">
+              <div
+                v-for="s in standards"
+                :key="s.id"
+                class="flex items-center justify-between gap-2 rounded-lg bg-gray-50 px-3 py-2 text-sm"
+              >
+                <div class="min-w-0 flex-1">
+                  <p class="truncate font-medium text-gray-800">{{ s.name }}</p>
+                  <p class="text-xs text-gray-400">{{ s.id }} · {{ s.category }} · {{ levelLabelMap[s.level] || s.level }}</p>
+                </div>
+                <button class="shrink-0 text-xs text-blue-500 hover:underline" @click="openEdit(s)">编辑</button>
+                <button class="shrink-0 text-xs text-red-500 hover:underline" @click="deleteStandard(s)">删除</button>
+              </div>
+              <p v-if="standards.length === 0" class="py-8 text-center text-gray-400">暂无数据</p>
+            </div>
+
+            <!-- 表单 -->
+            <div v-else class="space-y-3">
+              <div class="grid grid-cols-2 gap-3">
+                <label class="text-xs text-gray-500">标准 id<div class="mt-1"><input v-model="form.id" :disabled="!!editing" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" placeholder="如 hb-eb40" /></div></label>
+                <label class="text-xs text-gray-500">名称<div class="mt-1"><input v-model="form.name" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" /></div></label>
+                <label class="text-xs text-gray-500">类别<div class="mt-1"><input v-model="form.category" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" placeholder="软件开发" /></div></label>
+                <label class="text-xs text-gray-500">编号<div class="mt-1"><input v-model="form.code" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" placeholder="DB13/T 2106" /></div></label>
+                <label class="text-xs text-gray-500">地区<div class="mt-1"><input v-model="form.region" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" placeholder="河北" /></div></label>
+                <label class="text-xs text-gray-500">级别<div class="mt-1">
+                  <select v-model="form.level" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm">
+                    <option value="national">国家级</option>
+                    <option value="provincial">省级</option>
+                    <option value="municipal">市级/区级</option>
+                    <option value="industry">行业/团体</option>
+                    <option value="military">军用</option>
+                  </select>
+                </div></label>
+                <label class="col-span-2 text-xs text-gray-500">发布机构<div class="mt-1"><input v-model="form.org" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" /></div></label>
+              </div>
+              <label class="block text-xs text-gray-500">说明<div class="mt-1"><textarea v-model="form.summary" rows="2" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"></textarea></div></label>
+              <label class="block text-xs text-gray-500">核心参数（每行一个参数名）<div class="mt-1"><textarea v-model="form.paramsText" rows="3" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" placeholder="基准生产率"></textarea></div></label>
+              <label class="block text-xs text-gray-500">参数取值（每行 参数名: 取值）<div class="mt-1"><textarea v-model="form.valuesText" rows="3" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" placeholder="基准生产率: 8.5 FP/人月"></textarea></div></label>
+              <div class="flex justify-end gap-2 pt-2">
+                <button class="rounded-lg px-3 py-1.5 text-sm text-gray-500 hover:bg-gray-100" @click="editing = null">返回列表</button>
+                <button :disabled="saving" class="rounded-lg bg-primary px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50" @click="saveStandard">{{ saving ? '保存中…' : '保存' }}</button>
               </div>
             </div>
           </div>

@@ -2,6 +2,8 @@ import Database from 'better-sqlite3'
 import { dirname, join } from 'node:path'
 import { mkdirSync, existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+// 造价标准库静态数据（单一真相源，前端 fallback 与种子同源）；库为运行时权威，可经后台管理界面改
+import { standards } from '../../composables/useStandards'
 
 // 本地 SQLite 文件库，与 172.22.2.203 上的党建库 pb_show_init 零耦合、零牵连
 //
@@ -147,6 +149,42 @@ CREATE TABLE IF NOT EXISTS standard_attachments (
 );
 CREATE INDEX IF NOT EXISTS idx_sa_std ON standard_attachments(standard_id);
 `)
+
+// ── 造价标准库（种子数据：composables/useStandards.ts）──────────
+// 运行时从库读取（GET /api/standards）。首次启动（表空）灌入静态数据；
+// 库非空则不覆盖，保护后台管理界面对标准的增删改。
+db.exec(`
+CREATE TABLE IF NOT EXISTS standards (
+  id            TEXT PRIMARY KEY,            -- 标准 id（与附件关联、前端 key 一致）
+  category      TEXT,                        -- 类别（软件开发/运维费用/信创适配/...）
+  name          TEXT NOT NULL,               -- 标准名称
+  code          TEXT,                        -- 标准编号（CSBMK-202510 / 粤财行… / —）
+  region        TEXT,                        -- 地区（全国/四川/广东-佛山…）
+  level         TEXT,                        -- national/provincial/municipal/industry/military
+  org           TEXT,                        -- 发布机构
+  summary       TEXT,                        -- 说明
+  params        TEXT,                        -- JSON 数组：核心参数名
+  param_values  TEXT                         -- JSON 对象：参数名→取值
+);
+`)
+{
+  const stdCount = (db.prepare('SELECT COUNT(*) AS c FROM standards').get() as { c: number }).c
+  if (stdCount === 0 && standards.length > 0) {
+    const ins = db.prepare(
+      'INSERT OR IGNORE INTO standards (id, category, name, code, region, level, org, summary, params, param_values) VALUES (?,?,?,?,?,?,?,?,?,?)'
+    )
+    const tx = db.transaction((rows: any[]) => {
+      for (const s of rows) {
+        ins.run(
+          s.id, s.category, s.name, s.code, s.region, s.level, s.org, s.summary,
+          JSON.stringify(s.params || []), JSON.stringify(s.paramValues || {})
+        )
+      }
+    })
+    tx(standards)
+    console.log(`[seed] standards 已灌 ${standards.length} 条`)
+  }
+}
 
 // 设备价格库种子版本：seed 结构变化(加 subcategory / 重新解析 / 修正总调中心 subsite / 修正跨表求和公式求值)时 +1，触发自动重灌
 const DEVICE_SEED_VERSION = '6'
