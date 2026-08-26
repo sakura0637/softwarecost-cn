@@ -12,9 +12,9 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 401, statusMessage: '用户名或密码错误' })
   }
 
-  const token = await signToken(String(row.id))
+  const token = await signToken(String(row.id), row.role)
   return {
     token,
-    user: { id: row.id, username: row.username, email: row.email, phone: row.phone }
+    user: { id: row.id, username: row.username, email: row.email, phone: row.phone, role: row.role }
   }
 })

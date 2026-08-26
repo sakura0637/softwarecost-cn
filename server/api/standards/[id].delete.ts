@@ -4,10 +4,11 @@ import { createError, getRouterParam } from 'h3'
 import { unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 
-// 删除标准（需登录）。级联删除其附件元数据与实际文件
+// 删除标准（仅管理员）。级联删除其附件元数据与实际文件
 export default defineEventHandler(async (event) => {
-  const userId = await getUserId(event)
-  if (!userId) throw createError({ statusCode: 401, statusMessage: '请先登录' })
+  const u = await getAuthUser(event)
+  if (!u) throw createError({ statusCode: 401, statusMessage: '请先登录' })
+  if (u.role !== 'admin') throw createError({ statusCode: 403, statusMessage: '仅管理员可管理标准' })
   const id = getRouterParam(event, 'id')!
   if (!db.prepare('SELECT 1 FROM standards WHERE id = ?').get(id)) {
     throw createError({ statusCode: 404, statusMessage: '标准不存在' })

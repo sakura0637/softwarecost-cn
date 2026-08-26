@@ -42,5 +42,6 @@ export const useAuth = () => {
     return $fetch(url, { ...options, headers })
   }
 
-  return { token, user, setSession, logout, me, api }
+  const isAdmin = computed(() => (user.value?.role || '') === 'admin')
+  return { token, user, isAdmin, setSession, logout, me, api }
 }

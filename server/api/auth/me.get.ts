@@ -8,7 +8,7 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 401, statusMessage: '未登录' })
   }
   const row = db
-    .prepare('SELECT id, username, email, phone, created_at FROM users WHERE id = ?')
+    .prepare('SELECT id, username, email, phone, role, created_at FROM users WHERE id = ?')
     .get(userId)
   if (!row) {
     throw createError({ statusCode: 401, statusMessage: '用户不存在' })

@@ -4,7 +4,7 @@ import { ref, computed, onMounted, reactive } from 'vue'
 import { standards as fallbackStandards, type CostStandard } from '~/composables/useStandards'
 import { useAuth } from '~/composables/useAuth'
 
-const { token, api } = useAuth()
+const { token, user, isAdmin, api } = useAuth()
 
 // 标准列表（运行时权威来自库；接口失败则用静态 fallback）
 const standards = ref<CostStandard[]>([])
@@ -165,13 +165,15 @@ const showAdmin = ref(false)
 const editing = ref<CostStandard | null>(null) // 编辑中的标准；null 表示新增表单
 const form = reactive({
   id: '', category: '', name: '', code: '', region: '', level: 'industry', org: '', summary: '',
-  paramsText: '', valuesText: '',
 })
+// 核心参数键值对（每行一个参数名 + 取值），替代原文本每行解析
+const formParams = ref<{ key: string; value: string }[]>([])
 const saving = ref(false)
 
 function openNew() {
   editing.value = null
-  Object.assign(form, { id: '', category: '', name: '', code: '', region: '', level: 'industry', org: '', summary: '', paramsText: '', valuesText: '' })
+  Object.assign(form, { id: '', category: '', name: '', code: '', region: '', level: 'industry', org: '', summary: '' })
+  formParams.value = []
   showAdmin.value = true
 }
 function openEdit(s: CostStandard) {
@@ -179,22 +181,17 @@ function openEdit(s: CostStandard) {
   Object.assign(form, {
     id: s.id, category: s.category || '', name: s.name, code: s.code || '', region: s.region || '',
     level: s.level || 'industry', org: s.org || '', summary: s.summary || '',
-    paramsText: (s.params || []).join('\n'),
-    valuesText: Object.entries(s.paramValues || {}).map(([k, v]) => `${k}: ${v}`).join('\n'),
   })
+  formParams.value = (s.params || []).map(k => ({ key: k, value: (s.paramValues?.[k] ?? '') }))
   showAdmin.value = true
 }
 async function saveStandard() {
   if (!form.id.trim() || !form.name.trim()) { alert('id 与 name 必填'); return }
-  const params = form.paramsText.split('\n').map(x => x.trim()).filter(Boolean)
+  const params = formParams.value.map(p => p.key.trim()).filter(Boolean)
   const paramValues: Record<string, string> = {}
-  for (const line of form.valuesText.split('\n')) {
-    const idx = line.indexOf(':')
-    if (idx > 0) {
-      const k = line.slice(0, idx).trim()
-      const v = line.slice(idx + 1).trim()
-      if (k) paramValues[k] = v
-    }
+  for (const p of formParams.value) {
+    const k = p.key.trim()
+    if (k) paramValues[k] = p.value
   }
   const body = {
     id: form.id.trim(), category: form.category, name: form.name, code: form.code, region: form.region,
@@ -225,6 +222,12 @@ async function deleteStandard(s: CostStandard) {
     alert(e?.data?.statusMessage || '删除失败')
   }
 }
+function addParam() {
+  formParams.value.push({ key: '', value: '' })
+}
+function removeParam(i: number) {
+  formParams.value.splice(i, 1)
+}
 </script>
 
 <template>
@@ -249,7 +252,7 @@ async function deleteStandard(s: CostStandard) {
     <!-- 筛选区 -->
     <section class="container-custom -mt-8">
       <div class="rounded-xl bg-white p-6 shadow-card">
-        <div v-if="token" class="mb-3 flex justify-end">
+        <div v-if="token && isAdmin" class="mb-3 flex justify-end">
           <button class="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700" @click="showAdmin = true">管理标准</button>
         </div>
         <div class="flex flex-col gap-4 lg:flex-row lg:items-center">
@@ -522,8 +525,18 @@ async function deleteStandard(s: CostStandard) {
                 <label class="col-span-2 text-xs text-gray-500">发布机构<div class="mt-1"><input v-model="form.org" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" /></div></label>
               </div>
               <label class="block text-xs text-gray-500">说明<div class="mt-1"><textarea v-model="form.summary" rows="2" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"></textarea></div></label>
-              <label class="block text-xs text-gray-500">核心参数（每行一个参数名）<div class="mt-1"><textarea v-model="form.paramsText" rows="3" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" placeholder="基准生产率"></textarea></div></label>
-              <label class="block text-xs text-gray-500">参数取值（每行 参数名: 取值）<div class="mt-1"><textarea v-model="form.valuesText" rows="3" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" placeholder="基准生产率: 8.5 FP/人月"></textarea></div></label>
+              <div class="block">
+                <div class="flex items-center justify-between">
+                  <span class="text-xs text-gray-500">核心参数（参数名 + 取值，可逐行增删）</span>
+                  <button type="button" class="text-xs text-primary hover:underline" @click="addParam">+ 添加参数</button>
+                </div>
+                <div v-if="formParams.length === 0" class="mt-2 text-xs text-gray-400">暂无参数，点击「+ 添加参数」新增</div>
+                <div v-for="(p, i) in formParams" :key="i" class="mt-2 flex items-center gap-2">
+                  <input v-model="p.key" type="text" class="flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm" placeholder="参数名（如 基准生产率）" />
+                  <input v-model="p.value" type="text" class="flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm" placeholder="取值（如 8.5 FP/人月）" />
+                  <button type="button" class="shrink-0 text-xs text-red-500 hover:underline" @click="removeParam(i)">删除</button>
+                </div>
+              </div>
               <div class="flex justify-end gap-2 pt-2">
                 <button class="rounded-lg px-3 py-1.5 text-sm text-gray-500 hover:bg-gray-100" @click="editing = null">返回列表</button>
                 <button :disabled="saving" class="rounded-lg bg-primary px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50" @click="saveStandard">{{ saving ? '保存中…' : '保存' }}</button>

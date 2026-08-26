@@ -29,7 +29,7 @@ export default defineEventHandler(async (event) => {
     .prepare('INSERT INTO users (username, email, phone, password_hash) VALUES (?, ?, ?, ?)')
     .run(username, email, phone, password_hash)
   const userId = Number(info.lastInsertRowid)
-  const token = await signToken(String(userId))
+  const token = await signToken(String(userId), 'user')
 
-  return { token, user: { id: userId, username, email, phone } }
+  return { token, user: { id: userId, username, email, phone, role: 'user' } }
 })

@@ -1,11 +1,12 @@
 import db from '../utils/db'
-import { getUserId } from '../utils/auth'
+import { getAuthUser } from '../utils/auth'
 import { createError, readBody } from 'h3'
 
-// 新增标准（需登录）
+// 新增标准（仅管理员）
 export default defineEventHandler(async (event) => {
-  const userId = await getUserId(event)
-  if (!userId) throw createError({ statusCode: 401, statusMessage: '请先登录' })
+  const u = await getAuthUser(event)
+  if (!u) throw createError({ statusCode: 401, statusMessage: '请先登录' })
+  if (u.role !== 'admin') throw createError({ statusCode: 403, statusMessage: '仅管理员可管理标准' })
   const b = await readBody(event)
   if (!b?.id || !b?.name) throw createError({ statusCode: 400, statusMessage: 'id 与 name 必填' })
   if (db.prepare('SELECT 1 FROM standards WHERE id = ?').get(b.id)) {

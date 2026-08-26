@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3'
+import bcrypt from 'bcryptjs'
 import { dirname, join } from 'node:path'
 import { mkdirSync, existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -61,6 +62,9 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash VARCHAR(255) NOT NULL,
   created_at    TEXT         NOT NULL DEFAULT (datetime('now'))
 );
+
+-- 兼容老库：补 role 列（管理员角色限制用，默认普通用户）
+try { db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'") } catch { /* 列已存在 */ }
 
 CREATE TABLE IF NOT EXISTS projects (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -221,6 +225,29 @@ if (needReseed) {
   tx(seedRows)
   db.prepare('INSERT OR REPLACE INTO kv (k, v) VALUES (?, ?)').run('device_seed_version', DEVICE_SEED_VERSION)
   console.log(`[seed] device_prices 已重灌 ${seedRows.length} 条 (v${DEVICE_SEED_VERSION})`)
+}
+
+// ── 初始管理员（环境变量驱动，幂等）──────────
+// 部署时通过 ecosystem.config.cjs 配置 INIT_ADMIN_USERNAME 把指定账号设为管理员：
+//   - 账号已存在 → 升级为 admin
+//   - 账号不存在且给了 INIT_ADMIN_PASSWORD → 新建 admin 账号
+// 不配置则不自动建/改，管理员需手动在库里维护。
+{
+  const initUser = process.env.INIT_ADMIN_USERNAME
+  const initPwd = process.env.INIT_ADMIN_PASSWORD
+  const initEmail = process.env.INIT_ADMIN_EMAIL || null
+  if (initUser) {
+    const exist = db.prepare('SELECT id FROM users WHERE username = ?').get(initUser)
+    if (exist) {
+      db.prepare("UPDATE users SET role = 'admin' WHERE username = ?").run(initUser)
+      console.log(`[init] 已将用户 ${initUser} 设为管理员`)
+    } else if (initPwd) {
+      const ph = bcrypt.hashSync(initPwd, 10)
+      db.prepare('INSERT INTO users (username, email, phone, password_hash, role) VALUES (?,?,?,?,?)')
+        .run(initUser, initEmail, null, ph, 'admin')
+      console.log(`[init] 已创建管理员账号 ${initUser}`)
+    }
+  }
 }
 
 export default db
