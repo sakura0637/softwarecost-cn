@@ -1,5 +1,5 @@
 import db from '../../utils/db'
-import { hashPassword, signToken } from '../../utils/auth'
+import { hashPassword, signToken, getUserPerms } from '../../utils/auth'
 import { readBody, createError } from 'h3'
 
 export default defineEventHandler(async (event) => {
@@ -26,10 +26,14 @@ export default defineEventHandler(async (event) => {
 
   const password_hash = await hashPassword(password)
   const info = db
-    .prepare('INSERT INTO users (username, email, phone, password_hash) VALUES (?, ?, ?, ?)')
-    .run(username, email, phone, password_hash)
+    .prepare('INSERT INTO users (username, email, phone, password_hash, role) VALUES (?, ?, ?, ?, ?)')
+    .run(username, email, phone, password_hash, 'user')
   const userId = Number(info.lastInsertRowid)
+  // 新注册用户默认授予「普通用户」角色
+  const userRoleId = (db.prepare('SELECT id FROM roles WHERE code = ?').get('user') as { id: number } | undefined)
+  if (userRoleId) db.prepare('INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)').run(userId, userRoleId.id)
   const token = await signToken(String(userId), 'user')
+  const perms = getUserPerms(userId)
 
-  return { token, user: { id: userId, username, email, phone, role: 'user' } }
+  return { token, user: { id: userId, username, email, phone, role: 'user', ...perms } }
 })

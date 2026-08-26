@@ -4,7 +4,7 @@ import { ref, computed, onMounted, reactive } from 'vue'
 import { standards as fallbackStandards, type CostStandard } from '~/composables/useStandards'
 import { useAuth } from '~/composables/useAuth'
 
-const { token, user, isAdmin, api } = useAuth()
+const { token, user, isAdmin, can, api } = useAuth()
 
 // 标准列表（运行时权威来自库；接口失败则用静态 fallback）
 const standards = ref<CostStandard[]>([])
@@ -252,7 +252,7 @@ function removeParam(i: number) {
     <!-- 筛选区 -->
     <section class="container-custom -mt-8">
       <div class="rounded-xl bg-white p-6 shadow-card">
-        <div v-if="token && isAdmin" class="mb-3 flex justify-end">
+        <div v-if="can('standards:edit')" class="mb-3 flex justify-end">
           <button class="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700" @click="showAdmin = true">管理标准</button>
         </div>
         <div class="flex flex-col gap-4 lg:flex-row lg:items-center">
@@ -398,15 +398,15 @@ function removeParam(i: number) {
                   >
                     预览
                   </button>
-                  <button v-if="token" class="shrink-0 text-xs text-red-500 hover:underline" @click="onDelete(a.id)">
+                  <button v-if="can('standards:edit')" class="shrink-0 text-xs text-red-500 hover:underline" @click="onDelete(a.id)">
                     删除
                   </button>
                 </div>
               </div>
               <p v-else class="text-xs text-gray-400">暂无附件</p>
 
-              <!-- 上传（需登录） -->
-              <div v-if="token" class="mt-3 flex items-center gap-2">
+              <!-- 上传（需 standards:edit 权限） -->
+              <div v-if="can('standards:edit')" class="mt-3 flex items-center gap-2">
                 <input
                   id="std-file-input"
                   type="file"
@@ -422,7 +422,7 @@ function removeParam(i: number) {
                 </button>
               </div>
               <p v-else class="mt-3 text-xs text-gray-400">
-                请 <NuxtLink to="/login" class="text-primary hover:underline">登录</NuxtLink> 后上传附件
+                无上传/编辑权限
               </p>
             </div>
           </div>
@@ -483,7 +483,7 @@ function removeParam(i: number) {
             <div class="mb-4 flex items-center justify-between">
               <h3 class="text-xl font-bold text-gray-900">管理标准（{{ standards.length }}）</h3>
               <div class="flex gap-2">
-                <button v-if="!editing" class="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700" @click="openNew">+ 新增标准</button>
+                <button v-if="!editing && can('standards:create')" class="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700" @click="openNew">+ 新增标准</button>
                 <button class="text-gray-400 hover:text-gray-600" @click="showAdmin = false">✕</button>
               </div>
             </div>
@@ -499,8 +499,8 @@ function removeParam(i: number) {
                   <p class="truncate font-medium text-gray-800">{{ s.name }}</p>
                   <p class="text-xs text-gray-400">{{ s.id }} · {{ s.category }} · {{ levelLabelMap[s.level] || s.level }}</p>
                 </div>
-                <button class="shrink-0 text-xs text-blue-500 hover:underline" @click="openEdit(s)">编辑</button>
-                <button class="shrink-0 text-xs text-red-500 hover:underline" @click="deleteStandard(s)">删除</button>
+                <button v-if="can('standards:edit')" class="shrink-0 text-xs text-blue-500 hover:underline" @click="openEdit(s)">编辑</button>
+                <button v-if="can('standards:delete')" class="shrink-0 text-xs text-red-500 hover:underline" @click="deleteStandard(s)">删除</button>
               </div>
               <p v-if="standards.length === 0" class="py-8 text-center text-gray-400">暂无数据</p>
             </div>

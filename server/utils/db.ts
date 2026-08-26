@@ -102,6 +102,114 @@ try {
   db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
 } catch { /* 列已存在 */ }
 
+// ── RBAC：角色 / 权限 / 用户-角色关联（支持多角色，权限取并集）──────────
+db.exec(`
+CREATE TABLE IF NOT EXISTS roles (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  code        VARCHAR(64)  NOT NULL UNIQUE,   -- admin / user / 自定义编码
+  name        VARCHAR(64)  NOT NULL,
+  description TEXT,
+  is_system   INTEGER      NOT NULL DEFAULT 0, -- 系统内置角色(admin/user)不可删
+  created_at  TEXT         NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS permissions (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  code    VARCHAR(128) NOT NULL UNIQUE,        -- 如 standards:edit / m:standards
+  name    VARCHAR(64)  NOT NULL,
+  type    VARCHAR(16)  NOT NULL DEFAULT 'button', -- module / menu / button
+  module  VARCHAR(64),                          -- 所属模块 key（用于分组）
+  parent  VARCHAR(128),                         -- 父权限 code（模块 → 按钮 层级）
+  sort    INTEGER      NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS role_permissions (
+  role_id         INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+  permission_code VARCHAR(128) NOT NULL REFERENCES permissions(code) ON DELETE CASCADE,
+  PRIMARY KEY (role_id, permission_code)
+);
+
+CREATE TABLE IF NOT EXISTS user_roles (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role_id INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+  PRIMARY KEY (user_id, role_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ur_user ON user_roles(user_id);
+CREATE INDEX IF NOT EXISTS idx_ur_role ON user_roles(role_id);
+`)
+
+// ── RBAC 种子（首次启动灌入，库非空则不覆盖）──────────
+{
+  // 模块与动作定义 = 权限目录的唯一真相源。
+  // 一个模块可含 view/create/edit/delete 等动作，最终权限码为 `${module}:${action}`。
+  const MODULES = [
+    { key: 'standards',          name: '造价标准库',     actions: ['view', 'create', 'edit', 'delete'] },
+    { key: 'devices',            name: '设备价格库',     actions: ['view'] },
+    { key: 'industry',           name: '行业基准数据分析', actions: ['view'] },
+    { key: 'city',               name: '省市计价数据分析', actions: ['view'] },
+    { key: 'projects',           name: '工作台',         actions: ['view', 'create', 'edit', 'delete'] },
+    { key: 'admin-users',        name: '用户管理',       actions: ['view', 'create', 'edit', 'delete'] },
+    { key: 'admin-roles',        name: '角色管理',       actions: ['view', 'create', 'edit', 'delete'] },
+    { key: 'admin-permissions',  name: '权限管理',       actions: ['view', 'edit'] },
+  ]
+  const ACTION_NAMES: Record<string, string> = { view: '查看', create: '新增', edit: '编辑', delete: '删除' }
+
+  // 1) 系统角色
+  const roleCount = (db.prepare('SELECT COUNT(*) AS c FROM roles').get() as { c: number }).c
+  if (roleCount === 0) {
+    const insRole = db.prepare('INSERT OR IGNORE INTO roles (code, name, description, is_system) VALUES (?, ?, ?, 1)')
+    insRole.run('admin', '系统管理员', '拥有系统全部权限')
+    insRole.run('user', '普通用户', '默认注册用户，可浏览标准/设备库/工作台')
+    console.log('[seed] roles 已灌 2 条')
+  }
+
+  // 2) 权限目录（模块节点 + 按钮节点）
+  const permCount = (db.prepare('SELECT COUNT(*) AS c FROM permissions').get() as { c: number }).c
+  if (permCount === 0) {
+    const insPerm = db.prepare('INSERT OR IGNORE INTO permissions (code, name, type, module, parent, sort) VALUES (?, ?, ?, ?, ?, ?)')
+    let sort = 0
+    for (const m of MODULES) {
+      insPerm.run(`m:${m.key}`, m.name, 'module', m.key, null, sort++)
+      for (const a of m.actions) {
+        insPerm.run(`${m.key}:${a}`, ACTION_NAMES[a] || a, 'button', m.key, `m:${m.key}`, sort++)
+      }
+    }
+    console.log('[seed] permissions 已灌若干条')
+  }
+
+  // 3) 角色-权限分配（种子）
+  const rpCount = (db.prepare('SELECT COUNT(*) AS c FROM role_permissions').get() as { c: number }).c
+  if (rpCount === 0) {
+    const allPerms = (db.prepare('SELECT code FROM permissions').all() as { code: string }[]).map(p => p.code)
+    const adminId = (db.prepare('SELECT id FROM roles WHERE code = ?').get('admin') as { id: number }).id
+    const userId = (db.prepare('SELECT id FROM roles WHERE code = ?').get('user') as { id: number }).id
+    const insRp = db.prepare('INSERT OR IGNORE INTO role_permissions (role_id, permission_code) VALUES (?, ?)')
+    const tx = db.transaction(() => {
+      for (const code of allPerms) insRp.run(adminId, code) // 管理员拥有全部权限
+      // 普通用户：可浏览全部业务模块，且可管理自己的工作台项目
+      for (const code of allPerms) {
+        if (
+          code.startsWith('standards:') || code.startsWith('devices:') ||
+          code.startsWith('industry:') || code.startsWith('city:') || code.startsWith('projects:')
+        ) {
+          insRp.run(userId, code)
+        }
+      }
+    })
+    tx()
+    console.log('[seed] role_permissions 已分配')
+  }
+
+  // 4) 存量用户迁移进 user_roles（按 legacy 的 users.role）
+  const tx2 = db.transaction(() => {
+    const users = db.prepare('SELECT id, role FROM users').all() as { id: number; role: string }[]
+    const migrate = db.prepare('INSERT OR IGNORE INTO user_roles (user_id, role_id) SELECT ?, id FROM roles WHERE code = ?')
+    for (const u of users) migrate.run(u.id, u.role === 'admin' ? 'admin' : 'user')
+  })
+  tx2()
+}
+
 // ── 设备价格库（种子数据：server/seed/device_prices_seed.json）──────────
 // 运行时路径解析（Nitro 打包后 import.meta.url 指向 .output/server/chunks，
 // 正则匹配失败，故兜底到 cwd 与 DB_DIR，确保 dev/prod 均能定位 seed）：
@@ -239,15 +347,21 @@ if (needReseed) {
   const initPwd = process.env.INIT_ADMIN_PASSWORD
   const initEmail = process.env.INIT_ADMIN_EMAIL || null
   if (initUser) {
-    const exist = db.prepare('SELECT id FROM users WHERE username = ?').get(initUser)
+    const exist = db.prepare('SELECT id FROM users WHERE username = ?').get(initUser) as { id: number } | undefined
+    let uid: number | undefined
     if (exist) {
+      uid = exist.id
       db.prepare("UPDATE users SET role = 'admin' WHERE username = ?").run(initUser)
-      console.log(`[init] 已将用户 ${initUser} 设为管理员`)
     } else if (initPwd) {
       const ph = bcrypt.hashSync(initPwd, 10)
-      db.prepare('INSERT INTO users (username, email, phone, password_hash, role) VALUES (?,?,?,?,?)')
+      const info = db.prepare('INSERT INTO users (username, email, phone, password_hash, role) VALUES (?,?,?,?,?)')
         .run(initUser, initEmail, null, ph, 'admin')
-      console.log(`[init] 已创建管理员账号 ${initUser}`)
+      uid = Number(info.lastInsertRowid)
+    }
+    if (uid != null) {
+      const adminRoleId = (db.prepare('SELECT id FROM roles WHERE code = ?').get('admin') as { id: number }).id
+      db.prepare('INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)').run(uid, adminRoleId)
+      console.log(`[init] 已确保 ${initUser} 为管理员（user_roles 已关联）`)
     }
   }
 }

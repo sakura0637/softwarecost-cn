@@ -1,5 +1,5 @@
 import db from '../../utils/db'
-import { verifyPassword, signToken } from '../../utils/auth'
+import { verifyPassword, signToken, getUserPerms } from '../../utils/auth'
 import { readBody, createError } from 'h3'
 
 export default defineEventHandler(async (event) => {
@@ -13,8 +13,9 @@ export default defineEventHandler(async (event) => {
   }
 
   const token = await signToken(String(row.id), row.role)
+  const perms = getUserPerms(row.id)
   return {
     token,
-    user: { id: row.id, username: row.username, email: row.email, phone: row.phone, role: row.role }
+    user: { id: row.id, username: row.username, email: row.email, phone: row.phone, role: row.role, ...perms }
   }
 })

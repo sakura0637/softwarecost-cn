@@ -1,14 +1,12 @@
 import db, { STANDARD_UPLOAD_DIR } from '../../utils/db'
-import { getUserId } from '../../utils/auth'
+import { requirePerm } from '../../utils/auth'
 import { createError, getRouterParam } from 'h3'
 import { unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 
-// 删除标准（仅管理员）。级联删除其附件元数据与实际文件
+// 删除标准（需 standards:delete 权限）。级联删除其附件元数据与实际文件
 export default defineEventHandler(async (event) => {
-  const u = await getAuthUser(event)
-  if (!u) throw createError({ statusCode: 401, statusMessage: '请先登录' })
-  if (u.role !== 'admin') throw createError({ statusCode: 403, statusMessage: '仅管理员可管理标准' })
+  await requirePerm(event, 'standards:delete')
   const id = getRouterParam(event, 'id')!
   if (!db.prepare('SELECT 1 FROM standards WHERE id = ?').get(id)) {
     throw createError({ statusCode: 404, statusMessage: '标准不存在' })

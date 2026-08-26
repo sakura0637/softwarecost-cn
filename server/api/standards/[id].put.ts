@@ -1,12 +1,10 @@
 import db from '../../utils/db'
-import { getAuthUser } from '../../utils/auth'
+import { requirePerm } from '../../utils/auth'
 import { createError, getRouterParam, readBody } from 'h3'
 
-// 编辑标准（仅管理员）
+// 编辑标准（需 standards:edit 权限）
 export default defineEventHandler(async (event) => {
-  const u = await getAuthUser(event)
-  if (!u) throw createError({ statusCode: 401, statusMessage: '请先登录' })
-  if (u.role !== 'admin') throw createError({ statusCode: 403, statusMessage: '仅管理员可管理标准' })
+  await requirePerm(event, 'standards:edit')
   const id = getRouterParam(event, 'id')!
   const b = await readBody(event)
   if (!db.prepare('SELECT 1 FROM standards WHERE id = ?').get(id)) {

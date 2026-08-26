@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs'
 import { SignJWT, jwtVerify } from 'jose'
-import { getHeader } from 'h3'
+import { getHeader, createError } from 'h3'
+import db from './db'
 
 const secret = new TextEncoder().encode(
   process.env.AUTH_SECRET || 'dev-only-secret-change-me-please'
@@ -52,4 +53,34 @@ export async function getUserId(event: any): Promise<number | null> {
   } catch {
     return null
   }
+}
+
+// 计算某用户所拥有的角色与权限（多角色权限取并集）。纯函数，不依赖请求上下文
+export function getUserPerms(id: number): { roles: string[]; permissions: string[]; isAdmin: boolean } {
+  const roles = (db.prepare('SELECT r.code FROM roles r JOIN user_roles ur ON ur.role_id = r.id WHERE ur.user_id = ?').all(id) as { code: string }[]).map(r => r.code)
+  const permissions = (db.prepare(`
+    SELECT DISTINCT p.code
+    FROM permissions p
+    JOIN role_permissions rp ON rp.permission_code = p.code
+    JOIN user_roles ur ON ur.role_id = rp.role_id
+    WHERE ur.user_id = ?
+  `).all(id) as { code: string }[]).map(p => p.code)
+  const isAdmin = roles.includes('admin')
+  return { roles, permissions, isAdmin }
+}
+
+// 取当前登录用户完整身份（含角色/权限并集）；未登录返回 null
+export async function getAuthUserWithPerms(event: any): Promise<{ id: number; role: string; roles: string[]; permissions: string[]; isAdmin: boolean } | null> {
+  const base = await getAuthUser(event)
+  if (!base) return null
+  const perms = getUserPerms(base.id)
+  return { id: base.id, role: base.role, ...perms }
+}
+
+// 权限守卫：未登录 → 401；无该权限码 → 403；通过则返回用户身份信息
+export async function requirePerm(event: any, code: string): Promise<{ id: number; role: string; roles: string[]; permissions: string[]; isAdmin: boolean }> {
+  const u = await getAuthUserWithPerms(event)
+  if (!u) throw createError({ statusCode: 401, statusMessage: '未登录' })
+  if (!u.permissions.includes(code)) throw createError({ statusCode: 403, statusMessage: '无权限执行该操作' })
+  return u
 }

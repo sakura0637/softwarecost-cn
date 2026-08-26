@@ -1,12 +1,10 @@
 import db from '../utils/db'
-import { getAuthUser } from '../utils/auth'
+import { requirePerm } from '../utils/auth'
 import { createError, readBody } from 'h3'
 
-// 新增标准（仅管理员）
+// 新增标准（需 standards:create 权限，系统管理员默认拥有）
 export default defineEventHandler(async (event) => {
-  const u = await getAuthUser(event)
-  if (!u) throw createError({ statusCode: 401, statusMessage: '请先登录' })
-  if (u.role !== 'admin') throw createError({ statusCode: 403, statusMessage: '仅管理员可管理标准' })
+  await requirePerm(event, 'standards:create')
   const b = await readBody(event)
   if (!b?.id || !b?.name) throw createError({ statusCode: 400, statusMessage: 'id 与 name 必填' })
   if (db.prepare('SELECT 1 FROM standards WHERE id = ?').get(b.id)) {

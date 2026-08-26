@@ -4,17 +4,24 @@ export const useAuth = () => {
     process.client ? localStorage.getItem('token') : null
   )
   const user = useState<any>('auth_user', () => null)
+  // 当前用户角色编码列表与权限码列表（来自 /api/auth/me）
+  const roles = useState<string[]>('auth_roles', () => [])
+  const permissions = useState<string[]>('auth_perms', () => [])
   const router = process.client ? useRouter() : null
 
   const setSession = (t: string, u: any) => {
     token.value = t
     user.value = u
+    roles.value = u?.roles || []
+    permissions.value = u?.permissions || []
     if (process.client) localStorage.setItem('token', t)
   }
 
   const logout = () => {
     token.value = null
     user.value = null
+    roles.value = []
+    permissions.value = []
     if (process.client) {
       localStorage.removeItem('token')
       router?.push('/login')
@@ -28,6 +35,8 @@ export const useAuth = () => {
         headers: { Authorization: `Bearer ${token.value}` }
       })
       user.value = res.user
+      roles.value = res.user?.roles || []
+      permissions.value = res.user?.permissions || []
       return res.user
     } catch {
       logout()
@@ -42,6 +51,12 @@ export const useAuth = () => {
     return $fetch(url, { ...options, headers })
   }
 
-  const isAdmin = computed(() => (user.value?.role || '') === 'admin')
-  return { token, user, isAdmin, setSession, logout, me, api }
+  // 是否拥有某权限码（如 'standards:edit'）
+  const can = (code: string) => (permissions.value || []).includes(code)
+  // 是否拥有某个角色编码
+  const hasRole = (code: string) => (roles.value || []).includes(code)
+
+  const isAdmin = computed(() => hasRole('admin') || (user.value?.role === 'admin'))
+
+  return { token, user, roles, permissions, isAdmin, can, hasRole, setSession, logout, me, api }
 }
