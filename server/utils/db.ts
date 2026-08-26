@@ -63,9 +63,6 @@ CREATE TABLE IF NOT EXISTS users (
   created_at    TEXT         NOT NULL DEFAULT (datetime('now'))
 );
 
--- 兼容老库：补 role 列（管理员角色限制用，默认普通用户）
-try { db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'") } catch { /* 列已存在 */ }
-
 CREATE TABLE IF NOT EXISTS projects (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id       INTEGER      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -99,6 +96,11 @@ CREATE TABLE IF NOT EXISTS function_points (
 CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_id);
 CREATE INDEX IF NOT EXISTS idx_fp_project    ON function_points(project_id);
 `)
+
+// 兼容老库：补 role 列（管理员角色限制用，默认普通用户）。列已存在则忽略
+try {
+  db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
+} catch { /* 列已存在 */ }
 
 // ── 设备价格库（种子数据：server/seed/device_prices_seed.json）──────────
 // 运行时路径解析（Nitro 打包后 import.meta.url 指向 .output/server/chunks，
