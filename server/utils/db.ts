@@ -223,7 +223,7 @@ CREATE TABLE IF NOT EXISTS device_prices (
   category     VARCHAR(32),
   subcategory  VARCHAR(64),
   name         VARCHAR(255) NOT NULL,
-  unit         VARCHAR(16),
+  unit         TEXT,
   brand_model  VARCHAR(255),
   qty          DOUBLE PRECISION,
   unit_price   DOUBLE PRECISION,
@@ -232,6 +232,9 @@ CREATE TABLE IF NOT EXISTS device_prices (
 );
 CREATE INDEX IF NOT EXISTS idx_dp_station  ON device_prices(station);
 CREATE INDEX IF NOT EXISTS idx_dp_category ON device_prices(category);
+
+-- 兼容旧库：unit 早期为 VARCHAR(16)，种子里装的是长描述，需加宽到 TEXT（已为 TEXT 时则此句无副作用）
+ALTER TABLE device_prices ALTER COLUMN unit TYPE TEXT;
 
 CREATE TABLE IF NOT EXISTS standard_attachments (
   id           SERIAL PRIMARY KEY,
