@@ -19,21 +19,21 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 400, statusMessage: '用户名至少 2 个字符' })
   }
 
-  const exists = db.prepare('SELECT id FROM users WHERE username = ?').get(username)
+  const exists = await db.prepare('SELECT id FROM users WHERE username = ?').get(username)
   if (exists) {
     throw createError({ statusCode: 409, statusMessage: '用户名已存在' })
   }
 
   const password_hash = await hashPassword(password)
-  const info = db
+  const info = await db
     .prepare('INSERT INTO users (username, email, phone, password_hash, role) VALUES (?, ?, ?, ?, ?)')
     .run(username, email, phone, password_hash, 'user')
-  const userId = Number(info.lastInsertRowid)
+  const userId = Number(info.lastID)
   // 新注册用户默认授予「普通用户」角色
-  const userRoleId = (db.prepare('SELECT id FROM roles WHERE code = ?').get('user') as { id: number } | undefined)
-  if (userRoleId) db.prepare('INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)').run(userId, userRoleId.id)
+  const userRoleId = (await db.prepare('SELECT id FROM roles WHERE code = ?').get('user') as { id: number } | undefined)
+  if (userRoleId) await db.prepare('INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)').run(userId, userRoleId.id)
   const token = await signToken(String(userId), 'user')
-  const perms = getUserPerms(userId)
+  const perms = await getUserPerms(userId)
 
   return { token, user: { id: userId, username, email, phone, role: 'user', ...perms } }
 })

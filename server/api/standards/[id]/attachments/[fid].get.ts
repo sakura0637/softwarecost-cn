@@ -7,7 +7,7 @@ import { join } from 'node:path'
 // 默认 attachment（强制下载）；加 ?preview=1 时改为 inline，浏览器内联渲染（PDF/图片可直接预览）。
 export default defineEventHandler(async (event) => {
   const fid = getRouterParam(event, 'fid')!
-  const row = db.prepare('SELECT * FROM standard_attachments WHERE id = ?').get(fid) as any
+  const row = await db.prepare('SELECT * FROM standard_attachments WHERE id = ?').get(fid) as any
   if (!row) throw createError({ statusCode: 404, statusMessage: '文件不存在' })
 
   const filePath = join(STANDARD_UPLOAD_DIR, row.stored_name)

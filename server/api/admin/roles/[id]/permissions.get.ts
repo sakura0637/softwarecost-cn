@@ -6,6 +6,6 @@ import { getRouterParam } from 'h3'
 export default defineEventHandler(async (event) => {
   await requirePerm(event, 'admin-permissions:view')
   const id = Number(getRouterParam(event, 'id'))
-  const rows = db.prepare('SELECT permission_code FROM role_permissions WHERE role_id = ?').all(id) as { permission_code: string }[]
+  const rows = await db.prepare('SELECT permission_code FROM role_permissions WHERE role_id = ?').all(id) as { permission_code: string }[]
   return { permissions: rows.map(r => r.permission_code) }
 })

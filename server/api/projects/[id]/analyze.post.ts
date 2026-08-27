@@ -15,7 +15,7 @@ export default defineEventHandler(async (event) => {
   if (!userId) throw createError({ statusCode: 401, statusMessage: '未登录' })
 
   const id = Number(event.context.params!.id)
-  const project = db
+  const project = await db
     .prepare('SELECT * FROM projects WHERE id = ? AND user_id = ?')
     .get(id, userId)
   if (!project) throw createError({ statusCode: 404, statusMessage: '项目不存在' })
@@ -85,16 +85,17 @@ ${rawText.slice(0, 12000)}`
   }
 
   // 清空旧识别结果，写入新结果
-  db.prepare('DELETE FROM function_points WHERE project_id = ?').run(id)
+  await db.prepare('DELETE FROM function_points WHERE project_id = ?').run(id)
   const ins = db.prepare(
     'INSERT INTO function_points (project_id, seq, name, type, complexity, ret, det, ufp, note, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
   )
-  const insertMany = db.transaction((list: any[]) => {
-    list.forEach((fp, i) => {
+  await db.transaction(async () => {
+    for (let i = 0; i < fps.length; i++) {
+      const fp = fps[i]
       const type = String(fp.type || '').toUpperCase()
       const complexity = ['低', '中', '高'].includes(fp.complexity) ? fp.complexity : '中'
       const ufp = computeUFP(type, complexity)
-      ins.run(
+      await ins.run(
         id,
         i + 1,
         String(fp.name || '未命名功能项').slice(0, 255),
@@ -106,11 +107,10 @@ ${rawText.slice(0, 12000)}`
         String(fp.note || '').slice(0, 1000),
         'ai'
       )
-    })
+    }
   })
-  insertMany(fps)
 
-  db.prepare("UPDATE projects SET status = 'analyzed', updated_at = datetime('now') WHERE id = ?").run(id)
+  await db.prepare("UPDATE projects SET status = 'analyzed', updated_at = now() WHERE id = ?").run(id)
 
-  return { ok: true, count: fps.length, functionPoints: db.prepare('SELECT * FROM function_points WHERE project_id = ? ORDER BY seq').all(id) }
+  return { ok: true, count: fps.length, functionPoints: await db.prepare('SELECT * FROM function_points WHERE project_id = ? ORDER BY seq').all(id) }
 })

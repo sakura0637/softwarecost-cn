@@ -10,7 +10,7 @@ export default defineEventHandler(async (event) => {
   if (!userId) throw createError({ statusCode: 401, statusMessage: '未登录' })
 
   const id = Number(event.context.params!.id)
-  const project = db
+  const project = await db
     .prepare('SELECT * FROM projects WHERE id = ? AND user_id = ?')
     .get(id, userId)
   if (!project) throw createError({ statusCode: 404, statusMessage: '项目不存在' })
@@ -35,8 +35,8 @@ export default defineEventHandler(async (event) => {
       rawText = ''
     }
 
-    db.prepare(
-      "UPDATE projects SET document_path = ?, raw_text = ?, updated_at = datetime('now') WHERE id = ?"
+    await db.prepare(
+      "UPDATE projects SET document_path = ?, raw_text = ?, updated_at = now() WHERE id = ?"
     ).run(fullPath, rawText, id)
 
     return {
@@ -53,7 +53,7 @@ export default defineEventHandler(async (event) => {
   if (!text) {
     throw createError({ statusCode: 400, statusMessage: '未收到文件或文本' })
   }
-  db.prepare("UPDATE projects SET raw_text = ?, updated_at = datetime('now') WHERE id = ?").run(text, id)
+  await db.prepare("UPDATE projects SET raw_text = ?, updated_at = now() WHERE id = ?").run(text, id)
   return {
     ok: true,
     rawTextLength: text.length,

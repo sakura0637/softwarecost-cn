@@ -14,12 +14,12 @@ export default defineEventHandler(async (event) => {
 
   if (!name) throw createError({ statusCode: 400, statusMessage: '项目名称必填' })
 
-  const info = db
+  const info = await db
     .prepare(
       'INSERT INTO projects (user_id, name, description, method, standard_id) VALUES (?, ?, ?, ?, ?)'
     )
     .run(userId, name, description, method, standard_id)
-  const id = Number(info.lastInsertRowid)
-  const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(id)
+  const id = Number(info.lastID)
+  const project = await db.prepare('SELECT * FROM projects WHERE id = ?').get(id)
   return { project }
 })

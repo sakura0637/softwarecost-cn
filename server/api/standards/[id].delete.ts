@@ -8,10 +8,10 @@ import { join } from 'node:path'
 export default defineEventHandler(async (event) => {
   await requirePerm(event, 'standards:delete')
   const id = getRouterParam(event, 'id')!
-  if (!db.prepare('SELECT 1 FROM standards WHERE id = ?').get(id)) {
+  if (!(await db.prepare('SELECT 1 FROM standards WHERE id = ?').get(id))) {
     throw createError({ statusCode: 404, statusMessage: '标准不存在' })
   }
-  const atts = db.prepare('SELECT stored_name FROM standard_attachments WHERE standard_id = ?').all(id) as { stored_name: string }[]
+  const atts = await db.prepare('SELECT stored_name FROM standard_attachments WHERE standard_id = ?').all(id) as { stored_name: string }[]
   for (const a of atts) {
     try {
       await unlink(join(STANDARD_UPLOAD_DIR, a.stored_name))
@@ -19,7 +19,7 @@ export default defineEventHandler(async (event) => {
       /* 文件已不存在，忽略 */
     }
   }
-  db.prepare('DELETE FROM standard_attachments WHERE standard_id = ?').run(id)
-  db.prepare('DELETE FROM standards WHERE id = ?').run(id)
+  await db.prepare('DELETE FROM standard_attachments WHERE standard_id = ?').run(id)
+  await db.prepare('DELETE FROM standards WHERE id = ?').run(id)
   return { ok: true }
 })

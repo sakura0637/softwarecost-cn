@@ -8,7 +8,7 @@ export default defineEventHandler(async (event) => {
   if (!userId) throw createError({ statusCode: 401, statusMessage: '未登录' })
 
   const id = Number(event.context.params!.id)
-  const project = db
+  const project = await db
     .prepare('SELECT * FROM projects WHERE id = ? AND user_id = ?')
     .get(id, userId)
   if (!project) throw createError({ statusCode: 404, statusMessage: '项目不存在' })
@@ -17,7 +17,7 @@ export default defineEventHandler(async (event) => {
   const standardId = body.standardId || project.standard_id || 'default'
   const vaf = Math.max(0.5, Math.min(1.5, Number(body.vaf) || 1.0))
 
-  const fps = db.prepare('SELECT * FROM function_points WHERE project_id = ?').all(id)
+  const fps = await db.prepare('SELECT * FROM function_points WHERE project_id = ?').all(id)
   const totalUFP = fps.reduce((s: number, fp: any) => s + (fp.ufp || 0), 0)
 
   const std = body.standard || PRICING[standardId] || PRICING['default']
@@ -43,8 +43,8 @@ export default defineEventHandler(async (event) => {
     generatedAt: new Date().toISOString()
   }
 
-  db.prepare(
-    "UPDATE projects SET status = 'calculated', standard_id = ?, result_json = ?, updated_at = datetime('now') WHERE id = ?"
+  await db.prepare(
+    "UPDATE projects SET status = 'calculated', standard_id = ?, result_json = ?, updated_at = now() WHERE id = ?"
   ).run(standardId, JSON.stringify(result), id)
 
   return { result }

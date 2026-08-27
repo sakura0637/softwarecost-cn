@@ -56,15 +56,15 @@ export async function getUserId(event: any): Promise<number | null> {
 }
 
 // 计算某用户所拥有的角色与权限（多角色权限取并集）。纯函数，不依赖请求上下文
-export function getUserPerms(id: number): { roles: string[]; permissions: string[]; isAdmin: boolean } {
-  const roles = (db.prepare('SELECT r.code FROM roles r JOIN user_roles ur ON ur.role_id = r.id WHERE ur.user_id = ?').all(id) as { code: string }[]).map(r => r.code)
-  const permissions = (db.prepare(`
+export async function getUserPerms(id: number): Promise<{ roles: string[]; permissions: string[]; isAdmin: boolean }> {
+  const roles = ((await db.prepare('SELECT r.code FROM roles r JOIN user_roles ur ON ur.role_id = r.id WHERE ur.user_id = ?').all(id)) as { code: string }[]).map(r => r.code)
+  const permissions = ((await db.prepare(`
     SELECT DISTINCT p.code
     FROM permissions p
     JOIN role_permissions rp ON rp.permission_code = p.code
     JOIN user_roles ur ON ur.role_id = rp.role_id
     WHERE ur.user_id = ?
-  `).all(id) as { code: string }[]).map(p => p.code)
+  `).all(id)) as { code: string }[]).map(p => p.code)
   const isAdmin = roles.includes('admin')
   return { roles, permissions, isAdmin }
 }
@@ -73,7 +73,7 @@ export function getUserPerms(id: number): { roles: string[]; permissions: string
 export async function getAuthUserWithPerms(event: any): Promise<{ id: number; role: string; roles: string[]; permissions: string[]; isAdmin: boolean } | null> {
   const base = await getAuthUser(event)
   if (!base) return null
-  const perms = getUserPerms(base.id)
+  const perms = await getUserPerms(base.id)
   return { id: base.id, role: base.role, ...perms }
 }
 

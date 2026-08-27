@@ -12,10 +12,10 @@ export default defineEventHandler(async (event) => {
 
   if (!code || !name) throw createError({ statusCode: 400, statusMessage: '角色编码和名称必填' })
   if (!/^[A-Za-z0-9_-]+$/.test(code)) throw createError({ statusCode: 400, statusMessage: '角色编码仅限字母/数字/下划线/中划线' })
-  if (db.prepare('SELECT id FROM roles WHERE code = ?').get(code)) {
+  if (await db.prepare('SELECT id FROM roles WHERE code = ?').get(code)) {
     throw createError({ statusCode: 409, statusMessage: '角色编码已存在' })
   }
 
-  const info = db.prepare('INSERT INTO roles (code, name, description, is_system) VALUES (?, ?, ?, 0)').run(code, name, description)
-  return { ok: true, id: Number(info.lastInsertRowid) }
+  const info = await db.prepare('INSERT INTO roles (code, name, description, is_system) VALUES (?, ?, ?, 0)').run(code, name, description)
+  return { ok: true, id: Number(info.lastID) }
 })

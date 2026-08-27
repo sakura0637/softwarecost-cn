@@ -24,11 +24,11 @@ export default defineEventHandler(async (event) => {
 
   await writeFile(join(STANDARD_UPLOAD_DIR, storedName), file.data)
 
-  const info = db
+  const info = await db
     .prepare(
       'INSERT INTO standard_attachments (standard_id, file_name, stored_name, file_size, mime_type) VALUES (?, ?, ?, ?, ?)'
     )
     .run(standardId, original, storedName, file.data.length, file.type || 'application/octet-stream')
 
-  return { ok: true, id: info.lastInsertRowid }
+  return { ok: true, id: info.lastID }
 })

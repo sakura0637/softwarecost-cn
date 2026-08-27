@@ -10,7 +10,7 @@ export default defineEventHandler(async (event) => {
   if (!userId) throw createError({ statusCode: 401, statusMessage: '请先登录' })
 
   const fid = getRouterParam(event, 'fid')!
-  const row = db.prepare('SELECT * FROM standard_attachments WHERE id = ?').get(fid) as any
+  const row = await db.prepare('SELECT * FROM standard_attachments WHERE id = ?').get(fid) as any
   if (!row) throw createError({ statusCode: 404, statusMessage: '文件不存在' })
 
   try {
@@ -18,6 +18,6 @@ export default defineEventHandler(async (event) => {
   } catch {
     // 磁盘文件已不存在也可继续删除数据库记录
   }
-  db.prepare('DELETE FROM standard_attachments WHERE id = ?').run(fid)
+  await db.prepare('DELETE FROM standard_attachments WHERE id = ?').run(fid)
   return { ok: true }
 })

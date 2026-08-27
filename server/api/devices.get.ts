@@ -1,7 +1,7 @@
 import db from '../utils/db'
 import { getQuery } from 'h3'
 
-export default defineEventHandler((event) => {
+export default defineEventHandler(async (event) => {
   const q = getQuery(event)
   const keyword = String(q.q || '').trim()
   const station = String(q.station || '').trim()
@@ -47,8 +47,8 @@ export default defineEventHandler((event) => {
   }
   const sortCol = allowed[sort] || 'id'
 
-  const total = (db.prepare(`SELECT COUNT(*) AS c FROM device_prices ${whereSql}`).get(...params) as { c: number }).c
-  const items = db
+  const total = Number((await db.prepare(`SELECT COUNT(*) AS c FROM device_prices ${whereSql}`).get(...params) as { c: any }).c)
+  const items = await db
     .prepare(
       `       SELECT id, station, subsite, category, subcategory, name, unit, brand_model, qty, unit_price, total_price, remark
        FROM device_prices ${whereSql} ORDER BY ${sortCol} ${order} LIMIT ? OFFSET ?`

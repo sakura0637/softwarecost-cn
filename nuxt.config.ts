@@ -30,15 +30,15 @@ export default defineNuxtConfig({
     transpile: [],
   },
   nitro: {
-    // 原生模块(better-sqlite3)在运行时从 node_modules 加载，禁止 nft 追踪打包
+    // pg 为纯 JS 驱动，运行时从 node_modules 加载，禁止 nft 追踪打包
     externals: {
-      external: ['better-sqlite3'],
+      external: ['pg'],
     },
     output: {
-      external: ['better-sqlite3'],
+      external: ['pg'],
     },
     rollupConfig: {
-      external: ['better-sqlite3'],
+      external: ['pg'],
     },
     // 标准附件上传放开请求体大小上限（默认 1MB 会被 PDF 顶爆）
     routeRules: {
