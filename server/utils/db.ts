@@ -1,6 +1,6 @@
 import pg from 'pg'
 import bcrypt from 'bcryptjs'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { mkdirSync, existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 // 造价标准库静态数据（单一真相源，前端 fallback 与种子同源）；库为运行时权威，可经后台管理界面改
@@ -24,14 +24,17 @@ const pool = new pg.Pool({ connectionString, max: 10 })
 
 // ── 附件目录（仍落磁盘，与 DB 分离）────────────────────────────────────
 function resolveUploadDir(): string {
+  // 显式覆盖优先（ecosystem/.env 可设 UPLOAD_DIR 绝对路径）
+  if (process.env.UPLOAD_DIR) return process.env.UPLOAD_DIR
   const candidates: string[] = []
-  if (process.env.UPLOAD_DIR) candidates.push(process.env.UPLOAD_DIR)
-  const entry = process.argv[1] || ''
+  // 1) 从启动入口推导项目根：相对路径先用 cwd 解析成绝对，再匹配 .output/server
+  //    （PM2 的 script 是相对路径 .output/server/index.mjs，不 resolve 就匹配不到）
+  const entry = process.argv[1] ? resolve(process.argv[1]) : ''
   const m = entry.match(/(.+?)[\\/]\.output[\\/]server[\\/]/)
   if (m && m[1]) candidates.push(join(m[1], 'data', 'uploads'))
-  const here = dirname(fileURLToPath(import.meta.url))
-  const byMeta = here.replace(/[\\/]server[\\/]utils$/, '')
-  if (byMeta && byMeta !== here) candidates.push(join(byMeta, 'data', 'uploads'))
+  // 2) DB_DIR（ecosystem 注入绝对路径 ~/softwarecost/data）→ data/uploads（与旧版 SQLite 同根）
+  if (process.env.DB_DIR) candidates.push(join(process.env.DB_DIR, 'uploads'))
+  // 3) 兜底 cwd（PM2 已设 cwd=项目根）→ data/uploads
   candidates.push(join(process.cwd(), 'data', 'uploads'))
   for (const d of candidates) {
     try {

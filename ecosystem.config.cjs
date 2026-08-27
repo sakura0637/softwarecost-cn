@@ -12,6 +12,8 @@ const env = {
   NODE_ENV: 'production',
   // 数据库目录：用绝对路径，避免 Nitro chdir 到 .output/server 后找不到 data/
   DB_DIR: path.join(ROOT, 'data'),
+  // 标准附件上传目录：绝对路径，避免 Nitro chdir 后落到 .output/data/uploads 被构建清掉
+  UPLOAD_DIR: path.join(ROOT, 'data', 'uploads'),
 }
 
 if (fs.existsSync(envPath)) {
