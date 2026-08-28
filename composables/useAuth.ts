@@ -1,8 +1,13 @@
-// 全局认证状态：token 持久化到 localStorage，封装带 Authorization 的请求
+// 全局认证状态：token 用 cookie 存储（SSR/CSR 均可读），避免刷新退出、
+// 以及 useState 在 SSR 阶段把 token 初始化为 null 并写入 payload、客户端 hydrate
+// 后不再回读 localStorage 导致的“受保护路由判定未登录、点不进工作台”问题。
 export const useAuth = () => {
-  const token = useState<string | null>('auth_token', () =>
-    process.client ? localStorage.getItem('token') : null
-  )
+  // cookie 在服务器（请求头）与客户端（document.cookie）均可读，天然 SSR 安全
+  const token = useCookie<string | null>('auth_token', {
+    maxAge: 60 * 60 * 24 * 7,
+    sameSite: 'lax',
+    path: '/',
+  })
   const user = useState<any>('auth_user', () => null)
   // 当前用户角色编码列表与权限码列表（来自 /api/auth/me）
   const roles = useState<string[]>('auth_roles', () => [])
@@ -14,7 +19,6 @@ export const useAuth = () => {
     user.value = u
     roles.value = u?.roles || []
     permissions.value = u?.permissions || []
-    if (process.client) localStorage.setItem('token', t)
   }
 
   const logout = () => {
@@ -23,7 +27,8 @@ export const useAuth = () => {
     roles.value = []
     permissions.value = []
     if (process.client) {
-      localStorage.removeItem('token')
+      // 兼容旧版：清掉可能残留的 localStorage
+      try { localStorage.removeItem('token') } catch { /* ignore */ }
       router?.push('/login')
     }
   }
@@ -39,6 +44,7 @@ export const useAuth = () => {
       permissions.value = res.user?.permissions || []
       return res.user
     } catch {
+      // 仅在确实拿不到用户信息时清登录态（如 token 过期/无效）
       logout()
       return null
     }
