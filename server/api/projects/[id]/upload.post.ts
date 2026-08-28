@@ -1,18 +1,18 @@
 import db from '../../../utils/db'
-import { getUserId } from '../../../utils/auth'
+import { getAuthUser } from '../../../utils/auth'
 import { extractText } from '../../../utils/extract'
 import { readMultipartFormData, createError } from 'h3'
 import { writeFile, mkdir } from 'node:fs/promises'
 import { join, extname } from 'node:path'
 
 export default defineEventHandler(async (event) => {
-  const userId = await getUserId(event)
-  if (!userId) throw createError({ statusCode: 401, statusMessage: '未登录' })
+  const user = await getAuthUser(event)
+  if (!user) throw createError({ statusCode: 401, statusMessage: '未登录' })
 
   const id = Number(event.context.params!.id)
-  const project = await db
-    .prepare('SELECT * FROM projects WHERE id = ? AND user_id = ?')
-    .get(id, userId)
+  const project = user.role === 'admin'
+    ? await db.prepare('SELECT * FROM projects WHERE id = ?').get(id)
+    : await db.prepare('SELECT * FROM projects WHERE id = ? AND user_id = ?').get(id, user.id)
   if (!project) throw createError({ statusCode: 404, statusMessage: '项目不存在' })
 
   const parts = await readMultipartFormData(event).catch(() => null)

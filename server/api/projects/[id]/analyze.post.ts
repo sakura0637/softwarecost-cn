@@ -1,5 +1,5 @@
 import db from '../../../utils/db'
-import { getUserId } from '../../../utils/auth'
+import { getAuthUser } from '../../../utils/auth'
 import { computeUFP } from '../../../utils/pricing'
 import { createError } from 'h3'
 
@@ -11,13 +11,13 @@ function cleanJSON(text: string): any {
 }
 
 export default defineEventHandler(async (event) => {
-  const userId = await getUserId(event)
-  if (!userId) throw createError({ statusCode: 401, statusMessage: '未登录' })
+  const user = await getAuthUser(event)
+  if (!user) throw createError({ statusCode: 401, statusMessage: '未登录' })
 
   const id = Number(event.context.params!.id)
-  const project = await db
-    .prepare('SELECT * FROM projects WHERE id = ? AND user_id = ?')
-    .get(id, userId)
+  const project = user.role === 'admin'
+    ? await db.prepare('SELECT * FROM projects WHERE id = ?').get(id)
+    : await db.prepare('SELECT * FROM projects WHERE id = ? AND user_id = ?').get(id, user.id)
   if (!project) throw createError({ statusCode: 404, statusMessage: '项目不存在' })
 
   const rawText = project.raw_text || ''
