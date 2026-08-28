@@ -1,5 +1,5 @@
 import db from '../../utils/db'
-import { getQuery } from 'h3'
+import { getQuery, setHeader } from 'h3'
 import * as XLSX from 'xlsx'
 
 // 按当前筛选条件导出 Excel（不分页，返回全量）
