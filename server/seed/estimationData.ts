@@ -177,17 +177,33 @@ export interface ProvincialPricing {
   year: string
 }
 
-// 生产率(FP/人月)=hm÷PDR_p50；功能点单价(元/FP)=rate÷PDR_p50；人月费率(万元/人月)=rate÷10000
-export const provincialPricing: ProvincialPricing[] = [
+// 计价口径（务必按此推导，勿再手写常量）：
+//   生产率(FP/人月)   = hm ÷ pdr          —— 1 人月能完成多少功能点
+//   功能点单价(元/FP) = rate ÷ 生产率      = rate × pdr ÷ hm
+//   人月费率(万元/人月) = rate ÷ 10000
+//
+// ⚠️ 早期版本曾写成「功能点单价 = rate ÷ pdr」，量纲是 元·FP/(人月·人时)，无物理意义，
+//    会把单价算高约 3.4 倍（四川 818 误为 2809）。已修正，勿回退。
+interface ProvincialInput {
+  id: string
+  region: string
+  level: string
+  hm: number // 人月折算系数（人时/人月）
+  rate: number // 平均人力成本费率（元/人月）
+  pdr: number // 基准生产率（人时/功能点）
+  cf: number // 规模变更因子
+  source: string
+  year: string
+}
+
+const PROVINCIAL_INPUT: ProvincialInput[] = [
   {
     id: 'national',
     region: '全国基准',
     level: 'national',
-    function_point_price: Math.round(23000 / PDR_ALL.p50), // 3230
-    productivity: Math.round((174 / PDR_ALL.p50) * 100) / 100, // 24.44
-    labor_rate: 2.3,
     hm: 174,
     rate: 23000,
+    pdr: PDR_ALL.p50,
     cf: 1.39,
     source: 'CSBMK 201809 / GB/T 36964-2018',
     year: '2025',
@@ -196,11 +212,9 @@ export const provincialPricing: ProvincialPricing[] = [
     id: 'sichuan',
     region: '四川',
     level: 'provincial',
-    function_point_price: Math.round(20000 / PDR_ALL.p50), // 2809
-    productivity: Math.round((174 / PDR_ALL.p50) * 100) / 100, // 24.44
-    labor_rate: 2.0,
     hm: 174,
     rate: 20000,
+    pdr: PDR_ALL.p50,
     cf: 1.39,
     source: 'T/SCSIA 0015-2025',
     year: '2025',
@@ -209,16 +223,32 @@ export const provincialPricing: ProvincialPricing[] = [
     id: 'beijing',
     region: '北京',
     level: 'provincial',
-    function_point_price: Math.round(25500 / PDR_ALL.p50), // 3581
-    productivity: Math.round((176 / PDR_ALL.p50) * 100) / 100, // 24.72
-    labor_rate: 2.55,
     hm: 176,
     rate: 25500,
+    pdr: PDR_ALL.p50,
     cf: 1.22,
     source: 'DB 11/T 1010—2019',
     year: '2019',
   },
 ]
+
+export const provincialPricing: ProvincialPricing[] = PROVINCIAL_INPUT.map((p) => {
+  const productivity = p.hm / p.pdr // FP/人月
+  const fpPrice = p.rate / productivity // 元/FP = rate × pdr ÷ hm
+  return {
+    id: p.id,
+    region: p.region,
+    level: p.level,
+    function_point_price: Math.round(fpPrice), // 全国941 / 四川818 / 北京1032
+    productivity: Math.round(productivity * 100) / 100,
+    labor_rate: Math.round((p.rate / 10000) * 100) / 100,
+    hm: p.hm,
+    rate: p.rate,
+    cf: p.cf,
+    source: p.source,
+    year: p.year,
+  }
+})
 
 // 幂等回填 standards 表被占位的 param_values（仅覆盖仍是占位假值的行，已人工编辑的不动）
 export const standardRealParams: Record<string, { params: string[]; paramValues: Record<string, string | number> }> = {

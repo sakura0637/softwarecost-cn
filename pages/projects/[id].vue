@@ -6,13 +6,7 @@ const router = useRouter()
 const { api } = useAuth()
 const projectId = Number(route.params.id)
 
-// ---- 计价参数（与后端 pricing.ts 对应，需替换为你手上的权威基准）----
-const PRICING = [
-  { id: 'gb-t-36964', name: 'GB/T 36964（国标）', unitPrice: 1100 },
-  { id: 'hebei', name: '河北省信息化预算标准', unitPrice: 1000 },
-  { id: 'beijing', name: '北京市', unitPrice: 1400 },
-  { id: 'sichuan', name: '四川省', unitPrice: 1050 }
-]
+// UFP 权重：IFPUG/NESMA 标准常量（非示例值）
 const UFP_WEIGHT: Record<string, Record<string, number>> = {
   ILF: { 低: 7, 中: 10, 高: 15 },
   EIF: { 低: 5, 中: 7, 高: 10 },
@@ -37,9 +31,43 @@ const uploadMsg = ref('')
 const pastedText = ref('')
 const fileInput = ref<HTMLInputElement | null>(null)
 
-// 计价区
-const stdId = ref('hebei')
+// 计价区：标准 / 费率 / 生产率全部来自数据库（/api/pricing-standards）
+const standards = ref<any[]>([])
+const cities = ref<any[]>([])
+const stdId = ref('')
+const pdr = ref<number | null>(null)
+const city = ref('')
 const vaf = ref(1.0)
+
+const selectedStd = computed<any | null>(
+  () => standards.value.find((s) => s.id === stdId.value) || standards.value[0] || null
+)
+
+// 生效费率：选了城市用城市费率，否则用标准自带费率
+const effectiveRate = computed<number | null>(() => {
+  const s = selectedStd.value
+  if (!s) return null
+  if (city.value) {
+    const c = cities.value.find((x) => x.city === city.value)
+    const r = c ? (s.category === '运维' ? c.maintenance : c.development) : null
+    if (r) return r
+  }
+  return s.rate
+})
+const effectivePdr = computed(() => pdr.value || selectedStd.value?.pdr || 0)
+
+// 生产率(FP/人月) = hm ÷ pdr
+const productivity = computed(() => {
+  const s = selectedStd.value
+  if (!s || !effectivePdr.value) return null
+  return Math.round((s.hm / effectivePdr.value) * 100) / 100
+})
+// 功能点单价(元/FP) = rate × pdr ÷ hm
+const fpPrice = computed(() => {
+  const s = selectedStd.value
+  if (!s || !effectiveRate.value || !effectivePdr.value) return null
+  return Math.round((effectiveRate.value * effectivePdr.value) / s.hm)
+})
 
 const totalUFP = computed(() =>
   editableFps.value.reduce((s, fp) => s + (Number(fp.ufp) || 0), 0)
@@ -47,12 +75,17 @@ const totalUFP = computed(() =>
 const adjustedUFP = computed(() =>
   Math.round(totalUFP.value * vaf.value * 100) / 100
 )
-const selectedStd = computed(
-  () => PRICING.find((s) => s.id === stdId.value) || PRICING[0]
+const cost = computed(() => (fpPrice.value ? Math.round(adjustedUFP.value * fpPrice.value) : 0))
+const months = computed(() =>
+  productivity.value ? Math.round((adjustedUFP.value / productivity.value) * 100) / 100 : null
 )
-const cost = computed(() =>
-  Math.round(adjustedUFP.value * selectedStd.value.unitPrice)
-)
+
+// 切换标准时，把生产率与城市重置为该标准的默认值
+watch(selectedStd, (s) => {
+  if (!s) return
+  pdr.value = s.pdr
+  city.value = s.rateMode === 'city' ? s.suggestedCity || cities.value[0]?.city || '' : ''
+})
 
 const loadProject = async () => {
   loading.value = true
@@ -61,7 +94,10 @@ const loadProject = async () => {
     project.value = res.project
     fps.value = res.functionPoints || []
     editableFps.value = JSON.parse(JSON.stringify(fps.value))
-    stdId.value = res.project.standard_id || 'hebei'
+    // 仅当项目已存的标准仍存在于库里才沿用，否则回落到标准清单的第一条
+    if (res.project.standard_id && standards.value.some((s) => s.id === res.project.standard_id)) {
+      stdId.value = res.project.standard_id
+    }
     // 文本预览
     if (res.project.document_path || res.project.raw_text) {
       rawTextPreview.value = res.project.raw_text || ''
@@ -160,12 +196,27 @@ const saveFps = async () => {
   }
 }
 
-const exportReport = () => {
+const exportReport = async () => {
+  const s = selectedStd.value
+  if (!s) return
+
+  // 先把测算结果落库（供后续 Excel 导出 / 复用），失败也不阻塞导出
+  try {
+    await api('/api/projects/' + projectId + '/calculate', {
+      method: 'POST',
+      body: { standardId: stdId.value, city: city.value, pdr: effectivePdr.value, vaf: vaf.value }
+    })
+  } catch {
+    /* 忽略保存失败 */
+  }
+
   const lines: string[] = []
   lines.push('软件造价测算报告')
   lines.push('项目名称：' + (project.value?.name || ''))
   lines.push('功能点方法：' + (project.value?.method || '').toUpperCase())
-  lines.push('计价标准：' + selectedStd.value.name)
+  lines.push('计价标准：' + s.name + '（' + s.code + '）')
+  lines.push('发布机构：' + s.org)
+  if (city.value) lines.push('取费城市：' + city.value)
   lines.push('调整因子 VAF：' + vaf.value)
   lines.push('')
   lines.push('功能点明细：')
@@ -176,9 +227,18 @@ const exportReport = () => {
   lines.push('')
   lines.push('未调整功能点合计(UFP)：' + totalUFP.value)
   lines.push('调整后功能点：' + adjustedUFP.value)
-  lines.push('功能点单价(元/功能点)：' + selectedStd.value.unitPrice)
+  lines.push('基准生产率(人时/功能点)：' + effectivePdr.value)
+  lines.push('生产率(功能点/人月)：' + productivity.value)
+  lines.push('人月折算系数(人时/人月)：' + s.hm)
+  lines.push('人月费率(元/人月)：' + effectiveRate.value)
+  lines.push('功能点单价(元/功能点)：' + fpPrice.value)
+  lines.push('工期(人月)：' + (months.value ?? '-'))
   lines.push('测算造价(元)：' + cost.value)
   lines.push('折合(万元)：' + (cost.value / 10000).toFixed(2))
+  if (s.filled.length) {
+    lines.push('')
+    lines.push('参数补齐说明：' + s.filled.join('；'))
+  }
 
   const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' })
   const url = URL.createObjectURL(blob)
@@ -189,7 +249,22 @@ const exportReport = () => {
   URL.revokeObjectURL(url)
 }
 
-onMounted(loadProject)
+const loadStandards = async () => {
+  try {
+    const res: any = await api('/api/pricing-standards')
+    standards.value = res.standards || []
+    cities.value = res.cities || []
+    if (!stdId.value && standards.value.length) stdId.value = standards.value[0].id
+  } catch {
+    standards.value = []
+    cities.value = []
+  }
+}
+
+onMounted(async () => {
+  await loadStandards()
+  await loadProject()
+})
 </script>
 
 <template>
@@ -290,15 +365,47 @@ onMounted(loadProject)
             <div>
               <label class="mb-2 block text-sm font-medium text-gray-700">计价标准</label>
               <select v-model="stdId" class="w-full rounded-lg border border-gray-200 px-4 py-2.5 text-sm outline-none focus:border-primary">
-                <option v-for="s in PRICING" :key="s.id" :value="s.id">{{ s.name }}（{{ s.unitPrice }} 元/功能点）</option>
+                <optgroup label="参数完整（标准自带人月费率）">
+                  <option v-for="s in standards.filter((x: any) => x.complete)" :key="s.id" :value="s.id">
+                    {{ s.name }} · {{ s.region }}（{{ s.fpPrice }} 元/FP）
+                  </option>
+                </optgroup>
+                <optgroup label="需按城市取费 / 参数已补齐">
+                  <option v-for="s in standards.filter((x: any) => !x.complete)" :key="s.id" :value="s.id">
+                    {{ s.name }} · {{ s.region }}（{{ s.fpPrice ? s.fpPrice + ' 元/FP' : '需选城市' }}）
+                  </option>
+                </optgroup>
               </select>
+
+              <label class="mb-2 mt-4 block text-sm font-medium text-gray-700">基准生产率（人时/功能点）</label>
+              <select v-model.number="pdr" class="w-full rounded-lg border border-gray-200 px-4 py-2.5 text-sm outline-none focus:border-primary">
+                <option v-for="o in (selectedStd?.pdrOptions || [])" :key="o.label" :value="o.value">
+                  {{ o.label }} — {{ o.value }}
+                </option>
+              </select>
+
+              <label class="mb-2 mt-4 block text-sm font-medium text-gray-700">
+                城市费率（留空则用标准自带费率）
+              </label>
+              <select v-model="city" class="w-full rounded-lg border border-gray-200 px-4 py-2.5 text-sm outline-none focus:border-primary">
+                <option value="">（使用标准自带费率）</option>
+                <option v-for="c in cities" :key="c.city" :value="c.city">
+                  {{ c.city }} — {{ (selectedStd?.category === '运维' ? c.maintenance : c.development)?.toLocaleString() || '-' }} 元/人月
+                </option>
+              </select>
+
               <label class="mb-2 mt-4 block text-sm font-medium text-gray-700">调整因子 VAF：{{ vaf.toFixed(2) }}</label>
               <input v-model.number="vaf" type="range" min="0.5" max="1.5" step="0.01" class="w-full" />
             </div>
+
             <div class="rounded-xl bg-gradient-to-br from-primary/5 to-indigo-50 p-5">
               <div class="flex justify-between py-2 text-sm"><span class="text-gray-500">未调整功能点(UFP)</span><span class="font-semibold">{{ totalUFP }}</span></div>
               <div class="flex justify-between border-t border-gray-100 py-2 text-sm"><span class="text-gray-500">调整后功能点</span><span class="font-semibold">{{ adjustedUFP }}</span></div>
-              <div class="flex justify-between border-t border-gray-100 py-2 text-sm"><span class="text-gray-500">功能点单价</span><span class="font-semibold">{{ selectedStd.unitPrice }} 元</span></div>
+              <div class="flex justify-between border-t border-gray-100 py-2 text-sm"><span class="text-gray-500">基准生产率</span><span class="font-semibold">{{ effectivePdr }} 人时/FP</span></div>
+              <div class="flex justify-between border-t border-gray-100 py-2 text-sm"><span class="text-gray-500">生产率</span><span class="font-semibold">{{ productivity }} FP/人月</span></div>
+              <div class="flex justify-between border-t border-gray-100 py-2 text-sm"><span class="text-gray-500">人月费率</span><span class="font-semibold">{{ effectiveRate?.toLocaleString() || '-' }} 元/人月</span></div>
+              <div class="flex justify-between border-t border-gray-100 py-2 text-sm"><span class="text-gray-500">功能点单价</span><span class="font-semibold">{{ fpPrice ?? '-' }} 元/FP</span></div>
+              <div class="flex justify-between border-t border-gray-100 py-2 text-sm"><span class="text-gray-500">工期</span><span class="font-semibold">{{ months ?? '-' }} 人月</span></div>
               <div class="mt-3 flex items-baseline justify-between border-t border-gray-200 pt-3">
                 <span class="text-gray-700">测算造价</span>
                 <span class="text-2xl font-bold text-primary">¥{{ cost.toLocaleString() }}</span>
@@ -307,7 +414,16 @@ onMounted(loadProject)
               <button class="btn-primary mt-4 w-full py-2.5 text-sm" @click="exportReport">导出报告</button>
             </div>
           </div>
-          <p class="mt-3 text-xs text-gray-400">注：单价为标准示例值，正式测算请替换为你手上的权威基准参数。</p>
+
+          <div v-if="selectedStd" class="mt-4 rounded-lg bg-gray-50 p-3 text-xs text-gray-500">
+            <div>数据来源：{{ selectedStd.code }} · {{ selectedStd.org }}（共 {{ selectedStd.paramCount }} 项参数）</div>
+            <div v-if="selectedStd.filled.length" class="mt-1 text-amber-600">
+              以下参数为该标准未给定、由系统补齐：{{ selectedStd.filled.join('；') }}
+            </div>
+          </div>
+          <p class="mt-3 text-xs text-gray-400">
+            测算口径：生产率 = 人月折算系数 ÷ 基准生产率；功能点单价 = 人月费率 × 基准生产率 ÷ 人月折算系数。参数均取自已落库的标准原文。
+          </p>
         </div>
       </template>
     </div>

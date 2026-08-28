@@ -460,9 +460,13 @@ CREATE TABLE IF NOT EXISTS kv (
     console.log(`[seed] estimation_benchmarks 已灌 ${estimationBenchmarks.length} 条`)
   }
 
-  // 4.2) 省市计价对比（provincial_pricing）：首次启动灌入真实数据
-  const ppCount = Number((await pool.query('SELECT COUNT(*)::int AS c FROM provincial_pricing')).rows[0].c)
-  if (ppCount === 0 && provincialPricing.length > 0) {
+  // 4.2) 省市计价对比（provincial_pricing）：按种子版本重灌（版本号存在 kv 表）
+  //      v2 修正功能点单价量纲：原为 rate÷pdr（量纲无意义、单价虚高约 3.4 倍），
+  //      应为 rate×pdr÷hm。存量数据必须强制刷新，故改为版本驱动而非 COUNT=0 才灌。
+  const PROVINCIAL_SEED_VERSION = '2'
+  const ppVer = (await pool.query("SELECT v FROM kv WHERE k = 'provincial_seed_version'")).rows[0]?.v
+  if (ppVer !== PROVINCIAL_SEED_VERSION && provincialPricing.length > 0) {
+    await pool.query('DELETE FROM provincial_pricing')
     for (const p of provincialPricing) {
       await pool.query(
         `INSERT INTO provincial_pricing
@@ -472,7 +476,12 @@ CREATE TABLE IF NOT EXISTS kv (
         [p.id, p.region, p.level, p.function_point_price, p.productivity, p.labor_rate, p.hm, p.rate, p.cf, p.source, p.year]
       )
     }
-    console.log(`[seed] provincial_pricing 已灌 ${provincialPricing.length} 条`)
+    await pool.query(
+      `INSERT INTO kv (k, v) VALUES ('provincial_seed_version', $1)
+       ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v`,
+      [PROVINCIAL_SEED_VERSION]
+    )
+    console.log(`[seed] provincial_pricing 已重灌 ${provincialPricing.length} 条 (v${PROVINCIAL_SEED_VERSION})`)
   }
 
   // 4.3) 幂等回填 standards 表被占位的 param_values（仅覆盖仍是假值的行，已人工编辑的不动）
