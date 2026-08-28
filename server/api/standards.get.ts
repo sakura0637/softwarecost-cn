@@ -11,11 +11,11 @@ function safeParse(s: string | null, def: any) {
 
 // 公开：返回全部造价标准（从 standards 表读取，运行时权威）
 export default defineEventHandler(async () => {
-  const rows = db
+  const rows = (await db
     .prepare(
       'SELECT id, category, name, code, region, level, org, summary, params, param_values FROM standards ORDER BY id'
     )
-    .all() as any[]
+    .all()) as any[]
   const standards = rows.map((r) => ({
     id: r.id,
     category: r.category,
