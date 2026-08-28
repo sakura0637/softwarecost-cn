@@ -1,6 +1,6 @@
 import { defineEventHandler } from 'h3'
 import { getQuery } from 'h3'
-import db from '../../utils/db'
+import db from '../utils/db'
 
 // 省市计价对比（真实数据），驱动「省市计价数据」页
 export default defineEventHandler(async (event) => {

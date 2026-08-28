@@ -1,6 +1,6 @@
 import { defineEventHandler } from 'h3'
 import { getQuery } from 'h3'
-import db from '../../utils/db'
+import db from '../utils/db'
 
 // 行业/国标完整参数集（真实数据），驱动「行业基准数据」页
 export default defineEventHandler(async (event) => {
