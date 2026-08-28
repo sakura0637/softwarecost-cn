@@ -1,138 +1,213 @@
 <script setup lang="ts">
-// 行业基准数据分析页面
-import { adjustmentFactors, baseMetrics } from '~/composables/useBenchmark'
+// 行业基准数据分析页面 —— 数据从数据库读取（/api/estimation-benchmarks），展示真实基准参数
+import { ref, computed, onMounted } from 'vue'
 
-// 计算调整因子范围条的位置（归一化到 0-100%）
-const getPosition = (value: number, range: [number, number]) => {
-  const [min, max] = range
-  const pct = ((value - min) / (max - min)) * 100
-  return Math.max(0, Math.min(100, pct))
+interface Benchmark {
+  id: string
+  standardCode: string
+  standardName: string
+  edition: string
+  region: string
+  level: string
+  org: string
+  category: string
+  ufpMethod: string
+  ufpWeights: Record<string, Record<string, number>> | null
+  reuseFactors: Record<string, number> | null
+  cf: Record<string, number> | null
+  pdr: { all?: Record<string, number>; gov?: Record<string, number> } | null
+  hm: number | null
+  rate: number | null
+  adjustmentFactors: any
+  source: string
 }
 
-// 用户可调因子（演示交互）
-const userFactors = ref<Record<string, number>>(
-  Object.fromEntries(adjustmentFactors.map(f => [f.key, parseFloat(f.value)]))
-)
-const userMetrics = ref<Record<string, number>>(
-  Object.fromEntries(baseMetrics.map(m => [m.key, parseFloat(m.value)]))
-)
+const benchmarks = ref<Benchmark[]>([])
+const loading = ref(false)
 
-// 调整后的估算人月（演示计算）
-const estimatedResult = computed(() => {
-  const pdr = userMetrics.value.pdr
-  const hm = userMetrics.value.hm
-  const rate = userMetrics.value.rate
-  // 假设项目规模为 1000 功能点
-  const sizeFP = 1000
-  const factorProduct = adjustmentFactors.reduce((acc, f) => acc * userFactors.value[f.key], 1)
-  const adjustedFP = sizeFP * factorProduct
-  const personMonths = adjustedFP / pdr
-  const cost = personMonths * rate
-  return {
-    adjustedFP: Math.round(adjustedFP),
-    personMonths: Math.round(personMonths * 100) / 100,
-    cost: Math.round(cost * 100) / 100,
-    factorProduct: Math.round(factorProduct * 1000) / 1000,
+const ufpTypes = ['ILF', 'EIF', 'EI', 'EO', 'EQ']
+const ufpLevels = ['low', 'mid', 'high'] as const
+const ufpLevelLabel: Record<string, string> = { low: '低', mid: '中', high: '高' }
+
+const national = computed(() => benchmarks.value.find(b => b.level === 'national') || benchmarks.value[0] || null)
+const sichuan = computed(() => benchmarks.value.find(b => b.region === '四川') || null)
+const beijing = computed(() => benchmarks.value.find(b => b.region === '北京') || null)
+
+const afSichuan = computed(() => sichuan.value?.adjustmentFactors || null)
+
+async function load() {
+  loading.value = true
+  try {
+    const res: any = await $fetch('/api/estimation-benchmarks')
+    benchmarks.value = res.benchmarks || []
+  } catch {
+    benchmarks.value = []
+  } finally {
+    loading.value = false
   }
-})
+}
+onMounted(load)
 </script>
 
 <template>
   <div class="bg-gray-50">
-    <!-- 标题 -->
     <section class="bg-gradient-to-br from-blue-600 to-brand-indigo py-16">
       <div class="container-custom">
         <h1 class="text-3xl font-bold text-white md:text-4xl">行业基准数据分析</h1>
         <p class="mt-3 max-w-2xl text-blue-100">
-          整合 CSBMK（中国软件行业基准数据）与 CSBSG（中国软件行业协会软件造价分会基准数据），近 10 年全量数据支撑。
+          真实基准参数来自 CSBMK 中国软件行业基准数据、GB/T 36964-2018 及四川/北京等地标，数据已落库，随标准更新同步维护。
         </p>
       </div>
     </section>
 
     <div class="container-custom py-12">
-      <!-- 调整因子分析 -->
-      <div class="mb-12">
-        <h2 class="mb-2 text-2xl font-bold text-gray-900">功能点法调整因子</h2>
-        <p class="mb-6 text-sm text-gray-500">拖动滑块调整各因子取值，实时观察对造价评估结果的影响</p>
+      <p v-if="loading" class="py-10 text-center text-gray-400">加载中…</p>
+      <p v-if="!loading && benchmarks.length === 0" class="py-10 text-center text-gray-400">暂无基准数据</p>
 
+      <!-- 生产率基准数据 -->
+      <div v-if="national && national.pdr" class="mb-12">
+        <h2 class="mb-2 text-2xl font-bold text-gray-900">生产率基准数据（人时/功能点）</h2>
+        <p class="mb-6 text-sm text-gray-500">取自 {{ national.source }}，通常用 P50 测算最有可能值，P25/P75 测算上下限</p>
+        <div class="card overflow-x-auto">
+          <table class="w-full text-left text-sm">
+            <thead>
+              <tr class="border-b border-gray-200 text-gray-500">
+                <th class="py-3 pr-4 font-medium">业务领域</th>
+                <th class="py-3 pr-4 font-medium">P10</th>
+                <th class="py-3 pr-4 font-medium">P25</th>
+                <th class="py-3 pr-4 font-medium">P50</th>
+                <th class="py-3 pr-4 font-medium">P75</th>
+                <th class="py-3 pr-4 font-medium">P90</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="national.pdr.all" class="border-b border-gray-100">
+                <td class="py-3 pr-4 font-medium text-gray-900">全行业</td>
+                <td class="py-3 pr-4 text-gray-600">{{ national.pdr.all.p10 }}</td>
+                <td class="py-3 pr-4 text-gray-600">{{ national.pdr.all.p25 }}</td>
+                <td class="py-3 pr-4 font-semibold text-primary">{{ national.pdr.all.p50 }}</td>
+                <td class="py-3 pr-4 text-gray-600">{{ national.pdr.all.p75 }}</td>
+                <td class="py-3 pr-4 text-gray-600">{{ national.pdr.all.p90 }}</td>
+              </tr>
+              <tr v-if="national.pdr.gov" class="border-b border-gray-100">
+                <td class="py-3 pr-4 font-medium text-gray-900">电子政务</td>
+                <td class="py-3 pr-4 text-gray-600">{{ national.pdr.gov.p10 }}</td>
+                <td class="py-3 pr-4 text-gray-600">{{ national.pdr.gov.p25 }}</td>
+                <td class="py-3 pr-4 font-semibold text-primary">{{ national.pdr.gov.p50 }}</td>
+                <td class="py-3 pr-4 text-gray-600">{{ national.pdr.gov.p75 }}</td>
+                <td class="py-3 pr-4 text-gray-600">{{ national.pdr.gov.p90 }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- UFP 复杂度权重 -->
+      <div v-if="sichuan && sichuan.ufpWeights" class="mb-12">
+        <h2 class="mb-2 text-2xl font-bold text-gray-900">功能点复杂度权重（UFP）</h2>
+        <p class="mb-6 text-sm text-gray-500">来源：{{ sichuan.standardName }}（与 GB/T 36964-2018 一致）</p>
+        <div class="card overflow-x-auto">
+          <table class="w-full text-left text-sm">
+            <thead>
+              <tr class="border-b border-gray-200 text-gray-500">
+                <th class="py-3 pr-4 font-medium">计数项</th>
+                <th class="py-3 pr-4 font-medium">低</th>
+                <th class="py-3 pr-4 font-medium">中</th>
+                <th class="py-3 pr-4 font-medium">高</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="t in ufpTypes" :key="t" class="border-b border-gray-100">
+                <td class="py-3 pr-4 font-medium text-gray-900">{{ t }}</td>
+                <td class="py-3 pr-4 text-gray-600">{{ sichuan.ufpWeights[t]?.low }}</td>
+                <td class="py-3 pr-4 text-gray-600">{{ sichuan.ufpWeights[t]?.mid }}</td>
+                <td class="py-3 pr-4 text-gray-600">{{ sichuan.ufpWeights[t]?.high }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 调整因子 -->
+      <div v-if="afSichuan" class="mb-12">
+        <h2 class="mb-2 text-2xl font-bold text-gray-900">功能点法调整因子（四川 T/SCSIA 0015-2025）</h2>
+        <p class="mb-6 text-sm text-gray-500">SWF = 应用类型 × 非功能性 × 开发平台 × 开发团队背景</p>
         <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
-          <!-- 因子滑块 -->
-          <div class="card">
-            <h3 class="mb-4 font-semibold text-gray-900">因子取值调节</h3>
-            <div class="space-y-5">
-              <div v-for="f in adjustmentFactors" :key="f.key">
-                <div class="mb-1 flex items-center justify-between">
-                  <span class="text-sm font-medium text-gray-700">{{ f.label }}</span>
-                  <span class="text-sm font-bold text-primary">{{ userFactors[f.key].toFixed(2) }}</span>
-                </div>
-                <input
-                  v-model.number="userFactors[f.key]"
-                  type="range"
-                  :min="f.range[0]"
-                  :max="f.range[1]"
-                  step="0.01"
-                  class="w-full accent-primary"
-                />
-                <p class="mt-0.5 text-xs text-gray-400">{{ f.description }}</p>
-              </div>
-            </div>
+          <div v-if="afSichuan.application_type" class="card">
+            <h3 class="mb-3 font-semibold text-gray-900">应用类型调整因子（ST）</h3>
+            <table class="w-full text-sm">
+              <tbody>
+                <tr v-for="(v, k) in afSichuan.application_type" :key="k" class="border-b border-gray-100">
+                  <td class="py-2 text-gray-700">{{ k }}</td>
+                  <td class="py-2 text-right font-medium text-primary">{{ v }}</td>
+                </tr>
+              </tbody>
+            </table>
           </div>
-
-          <!-- 实时估算结果 -->
-          <div class="card flex flex-col">
-            <h3 class="mb-4 font-semibold text-gray-900">1000 功能点项目估算（演示）</h3>
-            <div class="space-y-4">
-              <div class="rounded-lg bg-blue-50 p-4">
-                <div class="text-sm text-gray-500">调整后功能点规模</div>
-                <div class="text-2xl font-bold text-primary">{{ estimatedResult.adjustedFP }} <span class="text-sm font-normal text-gray-400">FP</span></div>
-              </div>
-              <div class="rounded-lg bg-indigo-50 p-4">
-                <div class="text-sm text-gray-500">因子乘积</div>
-                <div class="text-2xl font-bold text-indigo-600">{{ estimatedResult.factorProduct }}</div>
-              </div>
-              <div class="grid grid-cols-2 gap-4">
-                <div class="rounded-lg bg-gray-50 p-4">
-                  <div class="text-sm text-gray-500">所需人月</div>
-                  <div class="text-xl font-bold text-gray-900">{{ estimatedResult.personMonths }} <span class="text-xs font-normal text-gray-400">人月</span></div>
-                </div>
-                <div class="rounded-lg bg-gray-50 p-4">
-                  <div class="text-sm text-gray-500">估算造价</div>
-                  <div class="text-xl font-bold text-gray-900">{{ estimatedResult.cost }} <span class="text-xs font-normal text-gray-400">万元</span></div>
-                </div>
-              </div>
-            </div>
-            <p class="mt-auto pt-4 text-xs text-gray-400">注：演示计算，实际评估需结合项目具体规模与官方基准数据。</p>
+          <div v-if="afSichuan.platform" class="card">
+            <h3 class="mb-3 font-semibold text-gray-900">开发平台调整因子（SL）</h3>
+            <table class="w-full text-sm">
+              <tbody>
+                <tr v-for="(v, k) in afSichuan.platform" :key="k" class="border-b border-gray-100">
+                  <td class="py-2 text-gray-700">{{ k }}</td>
+                  <td class="py-2 text-right font-medium text-primary">{{ v }}</td>
+                </tr>
+              </tbody>
+            </table>
           </div>
-        </div>
-      </div>
-
-      <!-- 基础计量参数 -->
-      <div>
-        <h2 class="mb-2 text-2xl font-bold text-gray-900">基础计量参数</h2>
-        <p class="mb-6 text-sm text-gray-500">功能点法造价评估的核心计量基准</p>
-
-        <div class="grid grid-cols-1 gap-6 md:grid-cols-3">
-          <div v-for="m in baseMetrics" :key="m.key" class="card">
-            <h3 class="mb-1 font-semibold text-gray-900">{{ m.label }}</h3>
-            <p class="mb-4 text-sm text-gray-500">{{ m.description }}</p>
-            <div class="flex items-baseline gap-1">
-              <span class="text-3xl font-bold text-primary">{{ userMetrics[m.key].toFixed(2) }}</span>
-              <span class="text-sm text-gray-400">{{ m.unit }}</span>
-            </div>
-            <input
-              v-model.number="userMetrics[m.key]"
-              type="range"
-              :min="m.range[0]"
-              :max="m.range[1]"
-              step="0.01"
-              class="mt-4 w-full accent-primary"
-            />
+          <div v-if="afSichuan.team" class="card">
+            <h3 class="mb-3 font-semibold text-gray-900">开发团队背景调整因子（DT）</h3>
+            <table class="w-full text-sm">
+              <tbody>
+                <tr v-for="(v, k) in afSichuan.team" :key="k" class="border-b border-gray-100">
+                  <td class="py-2 text-gray-700">{{ k }}</td>
+                  <td class="py-2 text-right font-medium text-primary">{{ v }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div v-if="afSichuan.nonfunctional" class="card">
+            <h3 class="mb-3 font-semibold text-gray-900">非功能性特征调整因子（NF）</h3>
+            <p class="mb-2 text-xs text-gray-500">{{ afSichuan.nonfunctional.formula }}</p>
+            <table class="w-full text-sm">
+              <tbody>
+                <tr
+                  v-for="dim in ['性能效率', '兼容性', '可靠性', '可移植性']"
+                  :key="dim"
+                  class="border-b border-gray-100"
+                >
+                  <td class="py-2 text-gray-700">{{ dim }}</td>
+                  <td class="py-2 text-right text-gray-600">明示要求 {{ afSichuan.nonfunctional[dim]['明示要求'] }}</td>
+                  <td class="py-2 text-right font-medium text-primary">无明示 {{ afSichuan.nonfunctional[dim]['无明示'] }}</td>
+                </tr>
+              </tbody>
+            </table>
           </div>
         </div>
       </div>
 
-      <!-- 基准数据来源 -->
-      <div class="mt-12 rounded-2xl bg-white p-8 shadow-card">
+      <!-- 各标准核心计量参数 -->
+      <div class="mb-12">
+        <h2 class="mb-2 text-2xl font-bold text-gray-900">各标准核心计量参数</h2>
+        <div class="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+          <div v-for="b in benchmarks" :key="b.id" class="card">
+            <div class="mb-1 flex items-center justify-between">
+              <h3 class="font-semibold text-gray-900">{{ b.region }} · {{ b.edition }}</h3>
+              <span class="rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-500">{{ b.standardCode }}</span>
+            </div>
+            <dl class="space-y-1 text-sm">
+              <div v-if="b.hm != null" class="flex justify-between"><dt class="text-gray-500">人月折算系数</dt><dd class="font-medium text-gray-700">{{ b.hm }} 人时/人月</dd></div>
+              <div v-if="b.rate != null" class="flex justify-between"><dt class="text-gray-500">人力成本费率</dt><dd class="font-medium text-gray-700">{{ b.rate.toLocaleString() }} 元/人月</dd></div>
+              <div v-if="b.cf" class="flex justify-between"><dt class="text-gray-500">规模变更因子</dt><dd class="font-medium text-gray-700">{{ Object.values(b.cf).join(' / ') }}</dd></div>
+              <div v-if="b.reuseFactors" class="flex justify-between"><dt class="text-gray-500">重用程度</dt><dd class="font-medium text-gray-700">高1/3·中2/3·低1</dd></div>
+            </dl>
+            <p class="mt-2 text-xs text-gray-400">{{ b.source }}</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- 数据来源 -->
+      <div class="rounded-2xl bg-white p-8 shadow-card">
         <h2 class="mb-4 text-xl font-bold text-gray-900">基准数据来源</h2>
         <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
           <div class="flex items-start gap-3 rounded-lg bg-gray-50 p-4">

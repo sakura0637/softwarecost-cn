@@ -5,6 +5,8 @@ import { mkdirSync, existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 // 造价标准库静态数据（单一真相源，前端 fallback 与种子同源）；库为运行时权威，可经后台管理界面改
 import { standards } from '../../composables/useStandards'
+// 造价评估真实参数种子（四川/北京/全国/GB/T36964 等，从标准原文精确抽取）
+import { estimationBenchmarks, provincialPricing, standardRealParams } from '../seed/estimationData'
 // RBAC 权限目录：外置配置，新增模块/按钮只需改此文件，db.ts 自动注册
 import { PERMISSION_MODULES, ACTION_NAMES, DEFAULT_ROLES, USER_PERMISSION_PATTERNS, matchesPermissionPattern } from '../config/permissions'
 
@@ -265,6 +267,43 @@ CREATE TABLE IF NOT EXISTS standards (
   param_values  TEXT
 );
 
+CREATE TABLE IF NOT EXISTS estimation_benchmarks (
+  id TEXT PRIMARY KEY,
+  standard_code TEXT,
+  standard_name TEXT,
+  edition TEXT,
+  region TEXT,
+  level TEXT,
+  org TEXT,
+  category TEXT,
+  ufp_method TEXT,
+  ufp_weights TEXT,
+  reuse_factors TEXT,
+  cf TEXT,
+  pdr TEXT,
+  hm NUMERIC,
+  rate NUMERIC,
+  adjustment_factors TEXT,
+  source TEXT,
+  is_active BOOLEAN DEFAULT true,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS provincial_pricing (
+  id TEXT PRIMARY KEY,
+  region TEXT,
+  level TEXT,
+  function_point_price NUMERIC,
+  productivity NUMERIC,
+  labor_rate NUMERIC,
+  hm NUMERIC,
+  rate NUMERIC,
+  cf NUMERIC,
+  source TEXT,
+  year TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS kv (
   k TEXT PRIMARY KEY,
   v TEXT
@@ -357,6 +396,50 @@ CREATE TABLE IF NOT EXISTS kv (
     }
     console.log(`[seed] standards 已灌 ${standards.length} 条`)
   }
+
+  // 4.1) 行业/国标完整参数集（estimation_benchmarks）：首次启动灌入真实数据
+  const ebCount = Number((await pool.query('SELECT COUNT(*)::int AS c FROM estimation_benchmarks')).rows[0].c)
+  if (ebCount === 0 && estimationBenchmarks.length > 0) {
+    for (const b of estimationBenchmarks) {
+      await pool.query(
+        `INSERT INTO estimation_benchmarks
+          (id, standard_code, standard_name, edition, region, level, org, category, ufp_method,
+           ufp_weights, reuse_factors, cf, pdr, hm, rate, adjustment_factors, source, is_active)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+         ON CONFLICT DO NOTHING`,
+        [b.id, b.standard_code, b.standard_name, b.edition, b.region, b.level, b.org, b.category, b.ufp_method,
+          JSON.stringify(b.ufp_weights), JSON.stringify(b.reuse_factors), JSON.stringify(b.cf), JSON.stringify(b.pdr),
+          b.hm, b.rate, JSON.stringify(b.adjustment_factors), b.source, b.is_active]
+      )
+    }
+    console.log(`[seed] estimation_benchmarks 已灌 ${estimationBenchmarks.length} 条`)
+  }
+
+  // 4.2) 省市计价对比（provincial_pricing）：首次启动灌入真实数据
+  const ppCount = Number((await pool.query('SELECT COUNT(*)::int AS c FROM provincial_pricing')).rows[0].c)
+  if (ppCount === 0 && provincialPricing.length > 0) {
+    for (const p of provincialPricing) {
+      await pool.query(
+        `INSERT INTO provincial_pricing
+          (id, region, level, function_point_price, productivity, labor_rate, hm, rate, cf, source, year)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+         ON CONFLICT DO NOTHING`,
+        [p.id, p.region, p.level, p.function_point_price, p.productivity, p.labor_rate, p.hm, p.rate, p.cf, p.source, p.year]
+      )
+    }
+    console.log(`[seed] provincial_pricing 已灌 ${provincialPricing.length} 条`)
+  }
+
+  // 4.3) 幂等回填 standards 表被占位的 param_values（仅覆盖仍是假值的行，已人工编辑的不动）
+  for (const [sid, real] of Object.entries(standardRealParams)) {
+    await pool.query(
+      `UPDATE standards SET params=$2, param_values=$3
+       WHERE id=$1 AND (param_values IS NULL OR param_values='' OR param_values::text LIKE '%1100%'
+         OR param_values::text LIKE '%0.8 ~ 1.2%' OR param_values::text LIKE '%8.5 FP/人月%')`,
+      [sid, JSON.stringify(real.params), JSON.stringify(real.paramValues)]
+    )
+  }
+  console.log('[seed] standards 真实参数已回填')
 
   // 5) 设备价格库种子（server/seed/device_prices_seed.json）
   const DEVICE_SEED_VERSION = '6'

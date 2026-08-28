@@ -371,7 +371,7 @@ function removeParam(i: number) {
               </div>
             </div>
             <div class="mt-6 rounded-lg bg-gray-50 p-4 text-xs text-gray-400">
-              注：以上数据整理自公开资料，仅供演示参考。实际评估请以官方发布的最新标准文本为准。
+              注：以上核心参数已落库，数据来源见各标准原文（如 T/SCSIA 0015-2025、DB 11/T 1010—2019、GB/T 36964-2018）。实际评估请以官方发布的最新标准文本为准。
             </div>
 
             <!-- 附件（政策原文，后台上传） -->
