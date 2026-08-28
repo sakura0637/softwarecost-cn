@@ -327,7 +327,7 @@ CREATE TABLE IF NOT EXISTS kv (
       const toRemove = allPerms.filter((code) => !USER_PERMISSION_PATTERNS.some((p) => matchesPermissionPattern(code, p)))
       if (toRemove.length) {
         await pool.query(
-          'DELETE FROM role_permissions WHERE role_id = $1 AND permission_code = ANY($2::text[])'
+          'DELETE FROM role_permissions WHERE role_id = $1 AND permission_code = ANY($2::text[])',
           [userId, toRemove]
         )
       }
