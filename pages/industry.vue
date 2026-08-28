@@ -1,7 +1,27 @@
 <script setup lang="ts">
-// 行业基准数据分析页面 —— 数据从数据库读取（/api/estimation-benchmarks），展示真实基准参数
-import { ref, computed, onMounted } from 'vue'
+// 行业基准数据分析 —— CSBMK / CSBSG 双基准源并列对比
+// 图表数据：/api/parameters（estimation_parameters，含 CSBMK-2025 / CSBSG-2021 参数集）
+// 总览数据：/api/estimation-benchmarks（各标准核心计量参数）
+import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 
+interface ParamValue { label: string; factor: number | string; desc?: string }
+interface ParamRow {
+  id: number
+  standardId: string
+  standardCode: string
+  standardName: string
+  edition: string
+  region: string
+  org: string
+  category: string
+  paramCategory: string
+  paramName: string
+  paramType: string
+  unit: string
+  values: ParamValue[]
+  description: string
+  seq: number
+}
 interface Benchmark {
   id: string
   standardCode: string
@@ -11,42 +31,233 @@ interface Benchmark {
   level: string
   org: string
   category: string
-  ufpMethod: string
-  ufpWeights: Record<string, Record<string, number>> | null
-  reuseFactors: Record<string, number> | null
-  cf: Record<string, number> | null
   pdr: { all?: Record<string, number>; gov?: Record<string, number> } | null
   hm: number | null
   rate: number | null
-  adjustmentFactors: any
   source: string
 }
 
+const params = ref<ParamRow[]>([])
 const benchmarks = ref<Benchmark[]>([])
 const loading = ref(false)
 
-const ufpTypes = ['ILF', 'EIF', 'EI', 'EO', 'EQ']
-const ufpLevels = ['low', 'mid', 'high'] as const
-const ufpLevelLabel: Record<string, string> = { low: '低', mid: '中', high: '高' }
+const SID_CSBMK = 'csbmk-2025'
+const SID_CSBSG = 'csbsg-2021'
 
-const national = computed(() => benchmarks.value.find(b => b.level === 'national') || benchmarks.value[0] || null)
-const sichuan = computed(() => benchmarks.value.find(b => b.region === '四川') || null)
-const beijing = computed(() => benchmarks.value.find(b => b.region === '北京') || null)
+const SOURCES = [
+  { sid: SID_CSBMK, label: 'CSBMK 2025', org: '北京软件造价评估技术创新联盟', color: '#2563eb' },
+  { sid: SID_CSBSG, label: 'CSBSG 2021', org: '中国软件行业协会软件造价分会', color: '#f59e0b' },
+]
 
-const afSichuan = computed(() => sichuan.value?.adjustmentFactors || null)
+function findParam(sid: string, name: string): ParamRow | undefined {
+  return params.value.find((p) => p.standardId === sid && p.paramName === name)
+}
+function factorOf(p: ParamRow | undefined, label: string): number | null {
+  if (!p) return null
+  const hit = p.values.find((v) => v.label === label)
+  if (!hit) return null
+  const n = Number(hit.factor)
+  return Number.isFinite(n) ? n : null
+}
 
+// ---------- 各参数取数 ----------
+const csbmkProd = computed(() => findParam(SID_CSBMK, '软件开发生产率（全行业分位）'))
+const csbsgProd = computed(() => findParam(SID_CSBSG, '软件开发生产率（全行业分位）'))
+const csbmkDomain = computed(() => findParam(SID_CSBMK, '软件开发生产率（分业务领域 P50）'))
+const csbsgDomain = computed(() => findParam(SID_CSBSG, '软件开发生产率（分行业 P50）'))
+const csbmkWl = computed(() => findParam(SID_CSBMK, '各工程活动工作量分布'))
+const csbsgWl = computed(() => findParam(SID_CSBSG, '各工程活动工作量分布'))
+const csbmkMaintProd = computed(() => findParam(SID_CSBMK, '应用软件运维生产率（分位）'))
+const csbmkMaintRatio = computed(() => findParam(SID_CSBMK, '年度运维费用占软件开发费用比例'))
+const csbmkFactors = computed(() => findParam(SID_CSBMK, '调整因子类别'))
+const csbsgFactors = computed(() => findParam(SID_CSBSG, '调整因子类别'))
+const csbmkUfp = computed(() => findParam(SID_CSBMK, '功能点取值（UFP权重）'))
+
+const PCT = ['P10', 'P25', 'P50', 'P75', 'P90']
+const WORKLOAD_COLORS = ['#2563eb', '#0891b2', '#059669', '#f59e0b', '#dc2626']
+
+// ---------- 图表 ----------
+const chartEls: Record<string, any> = {}
+const chartInst: Record<string, any> = {}
+let ec: any = null
+const setRef = (key: string) => (el: any) => {
+  if (el) chartEls[key] = el
+  else delete chartEls[key]
+}
+
+const axisBase = {
+  axisLabel: { fontSize: 11 },
+  axisLine: { lineStyle: { color: '#d1d5db' } },
+}
+const splitBase = { splitLine: { lineStyle: { color: '#f3f4f6' } } }
+
+function barSeriesOf(p: ParamRow | undefined, name: string, color: string) {
+  return {
+    name,
+    type: 'bar',
+    barMaxWidth: 28,
+    itemStyle: { color, borderRadius: [4, 4, 0, 0] },
+    data: p ? p.values.map((v) => ({ label: v.label, val: Number(v.factor) })) : [],
+  }
+}
+
+const chartOptions = computed<Record<string, any>>(() => {
+  const opts: Record<string, any> = {}
+
+  // 1) 产品开发生产率分位对比（两套基准源类别一致，做分组柱状）
+  opts.prodPct = {
+    tooltip: { trigger: 'axis', valueFormatter: (v: any) => (v == null ? '-' : `${v} 人时/功能点`) },
+    legend: { bottom: 0, textStyle: { fontSize: 11 } },
+    grid: { left: 20, right: 24, top: 32, bottom: 48, containLabel: true },
+    xAxis: { type: 'category', data: PCT, ...axisBase },
+    yAxis: {
+      type: 'value',
+      name: '人时/功能点',
+      nameTextStyle: { fontSize: 11, color: '#6b7280' },
+      axisLabel: { fontSize: 11 },
+      ...splitBase,
+    },
+    series: [
+      { ...barSeriesOf(csbmkProd.value, 'CSBMK 2025', '#2563eb'), data: PCT.map((p) => factorOf(csbmkProd.value, p)) },
+      { ...barSeriesOf(csbsgProd.value, 'CSBSG 2021', '#f59e0b'), data: PCT.map((p) => factorOf(csbsgProd.value, p)) },
+    ],
+  }
+
+  // 2) 分业务领域生产率（两套基准源领域划分不同，分别成图）
+  const domainChart = (p: ParamRow | undefined, title: string, color: string): any => ({
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, valueFormatter: (v: any) => `${v} 人时/功能点` },
+    grid: { left: 20, right: 24, top: 16, bottom: 20, containLabel: true },
+    xAxis: {
+      type: 'value',
+      name: '人时/FP',
+      nameTextStyle: { fontSize: 11, color: '#6b7280' },
+      axisLabel: { fontSize: 11 },
+      ...splitBase,
+    },
+    yAxis: { type: 'category', data: (p?.values || []).map((v) => v.label), ...axisBase },
+    series: [
+      {
+        name: title,
+        type: 'bar',
+        barMaxWidth: 14,
+        itemStyle: { color, borderRadius: [0, 4, 4, 0] },
+        data: (p?.values || []).map((v) => Number(v.factor)),
+      },
+    ],
+  })
+  opts.domainCsbmk = domainChart(csbmkDomain.value, 'CSBMK 2025', '#2563eb')
+  opts.domainCsbsg = domainChart(csbsgDomain.value, 'CSBSG 2021', '#f59e0b')
+
+  // 3) 各工程活动工作量分布（堆叠条形）
+  const workloadChart = (p: ParamRow | undefined, title: string): any => ({
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, valueFormatter: (v: any) => `${v}%` },
+    legend: { bottom: 0, textStyle: { fontSize: 10 } },
+    grid: { left: 20, right: 24, top: 16, bottom: 48, containLabel: true },
+    xAxis: { type: 'value', max: 100, name: '%', nameTextStyle: { fontSize: 11, color: '#6b7280' }, axisLabel: { fontSize: 11 }, ...splitBase },
+    yAxis: { type: 'category', data: [title], ...axisBase },
+    series: (p?.values || []).map((v, i) => ({
+      name: v.label,
+      type: 'bar',
+      stack: 'total',
+      barMaxWidth: 44,
+      itemStyle: { color: WORKLOAD_COLORS[i % WORKLOAD_COLORS.length] },
+      label: { show: true, fontSize: 10, formatter: '{c}%' },
+      data: [Number(v.factor)],
+    })),
+  })
+  opts.wlCsbmk = workloadChart(csbmkWl.value, 'CSBMK 2025')
+  opts.wlCsbsg = workloadChart(csbsgWl.value, 'CSBSG 2021')
+
+  // 4) 运维生产率分位（仅 CSBMK）
+  opts.maintProd = {
+    tooltip: { trigger: 'axis', valueFormatter: (v: any) => (v == null ? '-' : `${v} 人时/功能点`) },
+    grid: { left: 20, right: 24, top: 24, bottom: 20, containLabel: true },
+    xAxis: { type: 'category', data: PCT, ...axisBase },
+    yAxis: { type: 'value', name: '人时/功能点', nameTextStyle: { fontSize: 11, color: '#6b7280' }, axisLabel: { fontSize: 11 }, ...splitBase },
+    series: [
+      {
+        name: '运维生产率',
+        type: 'bar',
+        barMaxWidth: 28,
+        itemStyle: { color: '#7c3aed', borderRadius: [4, 4, 0, 0] },
+        data: PCT.map((p) => factorOf(csbmkMaintProd.value, p)),
+      },
+    ],
+  }
+
+  // 5) 年度运维费用占开发费用比例（仅 CSBMK）
+  opts.maintRatio = {
+    tooltip: { trigger: 'axis', valueFormatter: (v: any) => (v == null ? '-' : `${v}%`) },
+    grid: { left: 20, right: 24, top: 24, bottom: 20, containLabel: true },
+    xAxis: { type: 'category', data: PCT, ...axisBase },
+    yAxis: { type: 'value', name: '占开发费用%', nameTextStyle: { fontSize: 11, color: '#6b7280' }, axisLabel: { fontSize: 11 }, ...splitBase },
+    series: [
+      {
+        name: '运维费用占比',
+        type: 'bar',
+        barMaxWidth: 28,
+        itemStyle: { color: '#0d9488', borderRadius: [4, 4, 0, 0] },
+        label: { show: true, position: 'top', fontSize: 10, formatter: '{c}%' },
+        data: PCT.map((p) => factorOf(csbmkMaintRatio.value, p)),
+      },
+    ],
+  }
+
+  return opts
+})
+
+async function ensureEcharts() {
+  if (!ec) ec = await import('echarts')
+  return ec
+}
+
+async function renderAll() {
+  await nextTick()
+  const keys = Object.keys(chartEls)
+  if (!keys.length) return
+  await ensureEcharts()
+  for (const key of keys) {
+    const opt = chartOptions.value[key]
+    if (!opt) continue
+    if (!chartInst[key]) chartInst[key] = ec.init(chartEls[key])
+    chartInst[key].setOption(opt, true)
+  }
+}
+function onResize() {
+  for (const k of Object.keys(chartInst)) chartInst[k]?.resize()
+}
+watch(chartOptions, renderAll)
+
+// ---------- 加载 ----------
 async function load() {
   loading.value = true
   try {
-    const res: any = await $fetch('/api/estimation-benchmarks')
-    benchmarks.value = res.benchmarks || []
+    const [pr, bm] = await Promise.all([
+      $fetch('/api/parameters') as Promise<any>,
+      $fetch('/api/estimation-benchmarks') as Promise<any>,
+    ])
+    params.value = (pr.parameters || []).map((p: any) => ({
+      ...p,
+      values: Array.isArray(p.values) ? p.values : [],
+    }))
+    benchmarks.value = bm.benchmarks || []
   } catch {
+    params.value = []
     benchmarks.value = []
   } finally {
     loading.value = false
+    await renderAll()
   }
 }
-onMounted(load)
+
+onMounted(async () => {
+  await load()
+  window.addEventListener('resize', onResize)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', onResize)
+  for (const k of Object.keys(chartInst)) chartInst[k]?.dispose()
+})
 </script>
 
 <template>
@@ -55,177 +266,160 @@ onMounted(load)
       <div class="container-custom">
         <h1 class="text-3xl font-bold text-white md:text-4xl">行业基准数据分析</h1>
         <p class="mt-3 max-w-2xl text-blue-100">
-          真实基准参数来自 CSBMK 中国软件行业基准数据、GB/T 36964-2018 及四川/北京等地标，数据已落库，随标准更新同步维护。
+          CSBMK 与 CSBSG 双基准源并列对比，涵盖生产率分位、分业务领域生产率、工程活动工作量分布、运维成本结构及调整因子体系。
         </p>
       </div>
     </section>
 
     <div class="container-custom py-12">
       <p v-if="loading" class="py-10 text-center text-gray-400">加载中…</p>
-      <p v-if="!loading && benchmarks.length === 0" class="py-10 text-center text-gray-400">暂无基准数据</p>
+      <p v-if="!loading && params.length === 0" class="py-10 text-center text-gray-400">暂无基准数据</p>
 
-      <!-- 生产率基准数据 -->
-      <div v-if="national && national.pdr" class="mb-12">
-        <h2 class="mb-2 text-2xl font-bold text-gray-900">生产率基准数据（人时/功能点）</h2>
-        <p class="mb-6 text-sm text-gray-500">取自 {{ national.source }}，通常用 P50 测算最有可能值，P25/P75 测算上下限</p>
-        <div class="card overflow-x-auto">
-          <table class="w-full text-left text-sm">
-            <thead>
-              <tr class="border-b border-gray-200 text-gray-500">
-                <th class="py-3 pr-4 font-medium">业务领域</th>
-                <th class="py-3 pr-4 font-medium">P10</th>
-                <th class="py-3 pr-4 font-medium">P25</th>
-                <th class="py-3 pr-4 font-medium">P50</th>
-                <th class="py-3 pr-4 font-medium">P75</th>
-                <th class="py-3 pr-4 font-medium">P90</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-if="national.pdr.all" class="border-b border-gray-100">
-                <td class="py-3 pr-4 font-medium text-gray-900">全行业</td>
-                <td class="py-3 pr-4 text-gray-600">{{ national.pdr.all.p10 }}</td>
-                <td class="py-3 pr-4 text-gray-600">{{ national.pdr.all.p25 }}</td>
-                <td class="py-3 pr-4 font-semibold text-primary">{{ national.pdr.all.p50 }}</td>
-                <td class="py-3 pr-4 text-gray-600">{{ national.pdr.all.p75 }}</td>
-                <td class="py-3 pr-4 text-gray-600">{{ national.pdr.all.p90 }}</td>
-              </tr>
-              <tr v-if="national.pdr.gov" class="border-b border-gray-100">
-                <td class="py-3 pr-4 font-medium text-gray-900">电子政务</td>
-                <td class="py-3 pr-4 text-gray-600">{{ national.pdr.gov.p10 }}</td>
-                <td class="py-3 pr-4 text-gray-600">{{ national.pdr.gov.p25 }}</td>
-                <td class="py-3 pr-4 font-semibold text-primary">{{ national.pdr.gov.p50 }}</td>
-                <td class="py-3 pr-4 text-gray-600">{{ national.pdr.gov.p75 }}</td>
-                <td class="py-3 pr-4 text-gray-600">{{ national.pdr.gov.p90 }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <!-- UFP 复杂度权重 -->
-      <div v-if="sichuan && sichuan.ufpWeights" class="mb-12">
-        <h2 class="mb-2 text-2xl font-bold text-gray-900">功能点复杂度权重（UFP）</h2>
-        <p class="mb-6 text-sm text-gray-500">来源：{{ sichuan.standardName }}（与 GB/T 36964-2018 一致）</p>
-        <div class="card overflow-x-auto">
-          <table class="w-full text-left text-sm">
-            <thead>
-              <tr class="border-b border-gray-200 text-gray-500">
-                <th class="py-3 pr-4 font-medium">计数项</th>
-                <th class="py-3 pr-4 font-medium">低</th>
-                <th class="py-3 pr-4 font-medium">中</th>
-                <th class="py-3 pr-4 font-medium">高</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="t in ufpTypes" :key="t" class="border-b border-gray-100">
-                <td class="py-3 pr-4 font-medium text-gray-900">{{ t }}</td>
-                <td class="py-3 pr-4 text-gray-600">{{ sichuan.ufpWeights[t]?.low }}</td>
-                <td class="py-3 pr-4 text-gray-600">{{ sichuan.ufpWeights[t]?.mid }}</td>
-                <td class="py-3 pr-4 text-gray-600">{{ sichuan.ufpWeights[t]?.high }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <!-- 调整因子 -->
-      <div v-if="afSichuan" class="mb-12">
-        <h2 class="mb-2 text-2xl font-bold text-gray-900">功能点法调整因子（四川 T/SCSIA 0015-2025）</h2>
-        <p class="mb-6 text-sm text-gray-500">SWF = 应用类型 × 非功能性 × 开发平台 × 开发团队背景</p>
-        <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
-          <div v-if="afSichuan.application_type" class="card">
-            <h3 class="mb-3 font-semibold text-gray-900">应用类型调整因子（ST）</h3>
-            <table class="w-full text-sm">
-              <tbody>
-                <tr v-for="(v, k) in afSichuan.application_type" :key="k" class="border-b border-gray-100">
-                  <td class="py-2 text-gray-700">{{ k }}</td>
-                  <td class="py-2 text-right font-medium text-primary">{{ v }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <div v-if="afSichuan.platform" class="card">
-            <h3 class="mb-3 font-semibold text-gray-900">开发平台调整因子（SL）</h3>
-            <table class="w-full text-sm">
-              <tbody>
-                <tr v-for="(v, k) in afSichuan.platform" :key="k" class="border-b border-gray-100">
-                  <td class="py-2 text-gray-700">{{ k }}</td>
-                  <td class="py-2 text-right font-medium text-primary">{{ v }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <div v-if="afSichuan.team" class="card">
-            <h3 class="mb-3 font-semibold text-gray-900">开发团队背景调整因子（DT）</h3>
-            <table class="w-full text-sm">
-              <tbody>
-                <tr v-for="(v, k) in afSichuan.team" :key="k" class="border-b border-gray-100">
-                  <td class="py-2 text-gray-700">{{ k }}</td>
-                  <td class="py-2 text-right font-medium text-primary">{{ v }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <div v-if="afSichuan.nonfunctional" class="card">
-            <h3 class="mb-3 font-semibold text-gray-900">非功能性特征调整因子（NF）</h3>
-            <p class="mb-2 text-xs text-gray-500">{{ afSichuan.nonfunctional.formula }}</p>
-            <table class="w-full text-sm">
-              <tbody>
-                <tr
-                  v-for="dim in ['性能效率', '兼容性', '可靠性', '可移植性']"
-                  :key="dim"
-                  class="border-b border-gray-100"
-                >
-                  <td class="py-2 text-gray-700">{{ dim }}</td>
-                  <td class="py-2 text-right text-gray-600">明示要求 {{ afSichuan.nonfunctional[dim]['明示要求'] }}</td>
-                  <td class="py-2 text-right font-medium text-primary">无明示 {{ afSichuan.nonfunctional[dim]['无明示'] }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-
-      <!-- 各标准核心计量参数 -->
-      <div class="mb-12">
-        <h2 class="mb-2 text-2xl font-bold text-gray-900">各标准核心计量参数</h2>
-        <div class="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-          <div v-for="b in benchmarks" :key="b.id" class="card">
-            <div class="mb-1 flex items-center justify-between">
-              <h3 class="font-semibold text-gray-900">{{ b.region }} · {{ b.edition }}</h3>
-              <span class="rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-500">{{ b.standardCode }}</span>
+      <template v-if="!loading && params.length">
+        <!-- 基准源概览 -->
+        <div class="mb-10 grid grid-cols-1 gap-4 md:grid-cols-2">
+          <div
+            v-for="s in SOURCES"
+            :key="s.sid"
+            class="card border-l-4"
+            :style="{ borderLeftColor: s.color }"
+          >
+            <div class="flex items-start justify-between">
+              <div>
+                <h3 class="text-lg font-semibold text-gray-900">{{ s.label }}</h3>
+                <p class="mt-1 text-xs text-gray-500">{{ s.org }}</p>
+              </div>
+              <span class="rounded-full bg-gray-100 px-2 py-1 text-xs text-gray-600">
+                {{ s.sid === SID_CSBMK ? '2025 年' : '2021 年' }}
+              </span>
             </div>
-            <dl class="space-y-1 text-sm">
-              <div v-if="b.hm != null" class="flex justify-between"><dt class="text-gray-500">人月折算系数</dt><dd class="font-medium text-gray-700">{{ b.hm }} 人时/人月</dd></div>
-              <div v-if="b.rate != null" class="flex justify-between"><dt class="text-gray-500">人力成本费率</dt><dd class="font-medium text-gray-700">{{ b.rate.toLocaleString() }} 元/人月</dd></div>
-              <div v-if="b.cf" class="flex justify-between"><dt class="text-gray-500">规模变更因子</dt><dd class="font-medium text-gray-700">{{ Object.values(b.cf).join(' / ') }}</dd></div>
-              <div v-if="b.reuseFactors" class="flex justify-between"><dt class="text-gray-500">重用程度</dt><dd class="font-medium text-gray-700">高1/3·中2/3·低1</dd></div>
+            <dl class="mt-4 grid grid-cols-3 gap-2 text-center">
+              <div>
+                <dt class="text-xs text-gray-500">生产率 P50</dt>
+                <dd class="text-lg font-bold" :style="{ color: s.color }">
+                  {{ factorOf(s.sid === SID_CSBMK ? csbmkProd : csbsgProd, 'P50') ?? '-' }}
+                </dd>
+              </div>
+              <div>
+                <dt class="text-xs text-gray-500">功能点权重</dt>
+                <dd class="text-lg font-bold text-gray-700">{{ csbmkUfp ? csbmkUfp.values.length : '-' }} 项</dd>
+              </div>
+              <div>
+                <dt class="text-xs text-gray-500">因子类别</dt>
+                <dd class="text-lg font-bold text-gray-700">
+                  {{ (s.sid === SID_CSBMK ? csbmkFactors : csbsgFactors)?.values.length || '-' }} 类
+                </dd>
+              </div>
             </dl>
-            <p class="mt-2 text-xs text-gray-400">{{ b.source }}</p>
           </div>
         </div>
-      </div>
 
-      <!-- 数据来源 -->
-      <div class="rounded-2xl bg-white p-8 shadow-card">
-        <h2 class="mb-4 text-xl font-bold text-gray-900">基准数据来源</h2>
-        <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <div class="flex items-start gap-3 rounded-lg bg-gray-50 p-4">
-            <div class="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-primary text-white">CS</div>
-            <div>
-              <h4 class="font-semibold text-gray-900">CSBMK 中国软件行业基准数据</h4>
-              <p class="text-sm text-gray-500">北京软件造价评估技术创新联盟发布，覆盖生产率、费率等核心参数</p>
-            </div>
+        <!-- 生产率分位对比 -->
+        <div class="card mb-8">
+          <h2 class="mb-1 text-xl font-bold text-gray-900">软件开发生产率分位对比</h2>
+          <p class="mb-4 text-sm text-gray-500">
+            单位：人时/功能点。P50 为最有可能值，P25/P75 常用作测算上下限。
+          </p>
+          <div :ref="setRef('prodPct')" class="h-80 w-full"></div>
+        </div>
+
+        <!-- 分业务领域生产率 -->
+        <div class="mb-8 grid grid-cols-1 gap-4 md:grid-cols-2">
+          <div class="card">
+            <h3 class="mb-1 font-semibold text-gray-900">分业务领域生产率（CSBMK 2025）</h3>
+            <p class="mb-3 text-xs text-gray-500">各业务领域 P50 中位数，单位 人时/功能点</p>
+            <div :ref="setRef('domainCsbmk')" class="h-72 w-full"></div>
           </div>
-          <div class="flex items-start gap-3 rounded-lg bg-gray-50 p-4">
-            <div class="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-indigo-600 text-white">SS</div>
-            <div>
-              <h4 class="font-semibold text-gray-900">CSBSG 软件造价分会基准数据</h4>
-              <p class="text-sm text-gray-500">中国软件行业协会软件造价分会发布，行业权威基准参考</p>
-            </div>
+          <div class="card">
+            <h3 class="mb-1 font-semibold text-gray-900">分行业生产率（CSBSG 2021）</h3>
+            <p class="mb-3 text-xs text-gray-500">各行业 P50 中位数，单位 人时/功能点</p>
+            <div :ref="setRef('domainCsbsg')" class="h-72 w-full"></div>
           </div>
         </div>
-      </div>
+
+        <!-- 工程活动工作量分布 -->
+        <div class="mb-8 grid grid-cols-1 gap-4 md:grid-cols-2">
+          <div class="card">
+            <h3 class="mb-3 font-semibold text-gray-900">工程活动工作量分布（CSBMK 2025）</h3>
+            <div :ref="setRef('wlCsbmk')" class="h-56 w-full"></div>
+          </div>
+          <div class="card">
+            <h3 class="mb-3 font-semibold text-gray-900">工程活动工作量分布（CSBSG 2021）</h3>
+            <div :ref="setRef('wlCsbsg')" class="h-56 w-full"></div>
+          </div>
+        </div>
+
+        <!-- 运维成本结构 -->
+        <div class="mb-8 grid grid-cols-1 gap-4 md:grid-cols-2">
+          <div class="card">
+            <h3 class="mb-1 font-semibold text-gray-900">应用软件运维生产率（CSBMK 2025）</h3>
+            <p class="mb-3 text-xs text-gray-500">单位：人时/功能点</p>
+            <div :ref="setRef('maintProd')" class="h-64 w-full"></div>
+          </div>
+          <div class="card">
+            <h3 class="mb-1 font-semibold text-gray-900">年度运维费用占开发费用比例（CSBMK 2025）</h3>
+            <p class="mb-3 text-xs text-gray-500">用于由开发费用推算年度运维预算</p>
+            <div :ref="setRef('maintRatio')" class="h-64 w-full"></div>
+          </div>
+        </div>
+
+        <!-- 调整因子类别矩阵 -->
+        <div class="mb-8 grid grid-cols-1 gap-4 md:grid-cols-2">
+          <div v-for="s in SOURCES" :key="s.sid" class="card">
+            <h3 class="mb-3 font-semibold text-gray-900">
+              {{ s.label }} 规模与工作量调整因子类别
+            </h3>
+            <ul class="space-y-1.5">
+              <li
+                v-for="(v, i) in (s.sid === SID_CSBMK ? csbmkFactors : csbsgFactors)?.values || []"
+                :key="i"
+                class="flex items-center gap-2 rounded-md bg-gray-50 px-3 py-1.5 text-sm text-gray-700"
+              >
+                <span class="inline-block h-1.5 w-1.5 rounded-full" :style="{ backgroundColor: s.color }"></span>
+                {{ v.label }}
+              </li>
+            </ul>
+            <p v-if="!(s.sid === SID_CSBMK ? csbmkFactors : csbsgFactors)" class="text-sm text-gray-400">
+              暂无因子类别数据
+            </p>
+          </div>
+        </div>
+
+        <!-- 各标准核心参数总览 -->
+        <div v-if="benchmarks.length" class="card overflow-x-auto">
+          <h2 class="mb-4 text-xl font-bold text-gray-900">各标准核心计量参数总览</h2>
+          <table class="w-full text-left text-sm">
+            <thead>
+              <tr class="border-b border-gray-200 text-gray-500">
+                <th class="py-3 pr-4 font-medium">标准</th>
+                <th class="py-3 pr-4 font-medium">地区</th>
+                <th class="py-3 pr-4 font-medium text-right">人月折算(人时)</th>
+                <th class="py-3 pr-4 font-medium text-right">人力成本费率(元/人月)</th>
+                <th class="py-3 pr-4 font-medium text-right">基准生产率 P50(人时/FP)</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="b in benchmarks" :key="b.id" class="border-b border-gray-100 hover:bg-gray-50">
+                <td class="py-3 pr-4">
+                  <div class="font-medium text-gray-900">{{ b.standardName }}</div>
+                  <div class="text-xs text-gray-400">{{ b.standardCode }}</div>
+                </td>
+                <td class="py-3 pr-4 text-gray-600">{{ b.region }}</td>
+                <td class="py-3 pr-4 text-right text-gray-600">{{ b.hm ?? '-' }}</td>
+                <td class="py-3 pr-4 text-right font-semibold text-primary">
+                  {{ b.rate ? b.rate.toLocaleString() : '-' }}
+                </td>
+                <td class="py-3 pr-4 text-right text-gray-600">{{ b.pdr?.all?.p50 ?? b.pdr?.gov?.p50 ?? '-' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p class="mt-6 rounded-lg bg-blue-50 p-4 text-xs text-blue-700">
+          数据说明：CSBMK 2025 取自《2025年中国软件行业基准数据》，CSBSG 2021 取自《中国软件行业基准数据报告》（SSM-BK-202109）。
+          生产率为功能点耗时率（人时/功能点），数值越小代表效率越高。
+        </p>
+      </template>
     </div>
   </div>
 </template>

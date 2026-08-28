@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url'
 import { standards } from '../../composables/useStandards'
 // 造价评估真实参数种子（四川/北京/全国/GB/T36964 等，从标准原文精确抽取）
 import { estimationBenchmarks, provincialPricing, standardRealParams } from '../seed/estimationData'
+// 城市费率时序 + 参数字典（从全部省标/国标原文精确抽取，驱动 /city、/parameters 页）
+import { cityRates, estimationParameters } from '../seed/parameterData'
 // RBAC 权限目录：外置配置，新增模块/按钮只需改此文件，db.ts 自动注册
 import { PERMISSION_MODULES, ACTION_NAMES, DEFAULT_ROLES, USER_PERMISSION_PATTERNS, matchesPermissionPattern } from '../config/permissions'
 
@@ -267,6 +269,9 @@ CREATE TABLE IF NOT EXISTS standards (
   param_values  TEXT
 );
 
+-- 兼容旧库：新增启用开关（标准卡片的「启用/停用」状态，无副作用）
+ALTER TABLE standards ADD COLUMN IF NOT EXISTS is_enabled BOOLEAN DEFAULT true;
+
 CREATE TABLE IF NOT EXISTS estimation_benchmarks (
   id TEXT PRIMARY KEY,
   standard_code TEXT,
@@ -303,6 +308,46 @@ CREATE TABLE IF NOT EXISTS provincial_pricing (
   year TEXT,
   created_at TIMESTAMPTZ DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS city_rates (
+  id            SERIAL PRIMARY KEY,
+  city          TEXT NOT NULL,
+  city_level    TEXT,
+  year          INTEGER NOT NULL,
+  rate_type     TEXT NOT NULL CHECK (rate_type IN ('development','maintenance')),
+  rate          NUMERIC NOT NULL,  -- 元/人月
+  benchmark_org TEXT,              -- 基准机构：CSBMK / CSBSG
+  source        TEXT,
+  created_at    TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_cr_city  ON city_rates(city);
+CREATE INDEX IF NOT EXISTS idx_cr_year  ON city_rates(year);
+CREATE INDEX IF NOT EXISTS idx_cr_type  ON city_rates(rate_type);
+CREATE INDEX IF NOT EXISTS idx_cr_org   ON city_rates(benchmark_org);
+-- 兼容已存在的旧表（首次建表时列已在 CREATE 中，此处仅补列）
+ALTER TABLE city_rates ADD COLUMN IF NOT EXISTS benchmark_org TEXT;
+
+CREATE TABLE IF NOT EXISTS estimation_parameters (
+  id            SERIAL PRIMARY KEY,
+  standard_id   TEXT NOT NULL,
+  standard_code TEXT,
+  standard_name TEXT,
+  edition       TEXT,
+  region        TEXT,
+  org           TEXT,
+  category      TEXT,             -- 开发 / 运维
+  param_category TEXT,            -- 规模度量-功能点相关 / 规模度量-其他 / 工作量度量 / 成本估算
+  param_name    TEXT NOT NULL,
+  param_type    TEXT,             -- weight / factor / rate / productivity / formula
+  unit          TEXT,
+  values        TEXT,             -- JSONB 兼容：存为 TEXT(JsonString)，读取端 JSON.parse
+  description   TEXT,
+  seq           INTEGER DEFAULT 0,
+  is_active     BOOLEAN DEFAULT true,
+  created_at    TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_ep_std   ON estimation_parameters(standard_id);
+CREATE INDEX IF NOT EXISTS idx_ep_cat   ON estimation_parameters(param_category);
 
 CREATE TABLE IF NOT EXISTS kv (
   k TEXT PRIMARY KEY,
@@ -440,6 +485,37 @@ CREATE TABLE IF NOT EXISTS kv (
     )
   }
   console.log('[seed] standards 真实参数已回填')
+
+  // 4.4) 城市费率时序（city_rates）：首次启动灌入真实数据（8 城市 × 2021-2025 × 开发/运维）
+  const crCount = Number((await pool.query('SELECT COUNT(*)::int AS c FROM city_rates')).rows[0].c)
+  if (crCount === 0 && cityRates.length > 0) {
+    for (const r of cityRates) {
+      await pool.query(
+        `INSERT INTO city_rates (city, city_level, year, rate_type, rate, benchmark_org, source)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)
+         ON CONFLICT DO NOTHING`,
+        [r.city, r.city_level, r.year, r.rate_type, r.rate, r.benchmark_org, r.source]
+      )
+    }
+    console.log(`[seed] city_rates 已灌 ${cityRates.length} 条`)
+  }
+
+  // 4.5) 参数字典（estimation_parameters）：首次启动灌入真实参数（多省标/国标，驱动 /parameters 页）
+  const epCount = Number((await pool.query('SELECT COUNT(*)::int AS c FROM estimation_parameters')).rows[0].c)
+  if (epCount === 0 && estimationParameters.length > 0) {
+    for (const p of estimationParameters) {
+      await pool.query(
+        `INSERT INTO estimation_parameters
+          (standard_id, standard_code, standard_name, edition, region, org, category,
+           param_category, param_name, param_type, unit, values, description, seq, is_active)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+         ON CONFLICT DO NOTHING`,
+        [p.standard_id, p.standard_code, p.standard_name, p.edition, p.region, p.org, p.category,
+         p.param_category, p.param_name, p.param_type, p.unit, JSON.stringify(p.values), p.description, p.seq, true]
+      )
+    }
+    console.log(`[seed] estimation_parameters 已灌 ${estimationParameters.length} 条`)
+  }
 
   // 5) 设备价格库种子（server/seed/device_prices_seed.json）
   const DEVICE_SEED_VERSION = '6'

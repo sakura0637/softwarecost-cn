@@ -12,6 +12,7 @@ export const PERMISSION_MODULES: PermissionModule[] = [
   { key: 'devices', name: '设备价格库', actions: ['view', 'create', 'edit', 'delete'] },
   { key: 'industry', name: '行业基准数据分析', actions: ['view'] },
   { key: 'city', name: '省市计价数据分析', actions: ['view'] },
+  { key: 'parameters', name: '参数设置', actions: ['view'] },
   { key: 'projects', name: '工作台', actions: ['view', 'create', 'edit', 'delete'] },
   { key: 'admin-users', name: '用户管理', actions: ['view', 'create', 'edit', 'delete'] },
   { key: 'admin-roles', name: '角色管理', actions: ['view', 'create', 'edit', 'delete'] },
@@ -39,6 +40,7 @@ export const USER_PERMISSION_PATTERNS = [
   'devices:view',
   'industry:*',
   'city:*',
+  'parameters:*',
   'projects:*',
 ]
 
