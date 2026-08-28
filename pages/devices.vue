@@ -45,9 +45,10 @@ async function refreshSubsiteOptions() {
 
 async function refreshSubcategoryOptions() {
   subcategoryOptions.value = []
-  if (!station.value) return
-  const url = `/api/devices/filters?station=${encodeURIComponent(station.value)}` +
-    (category.value ? `&category=${encodeURIComponent(category.value)}` : '')
+  const params = new URLSearchParams()
+  if (station.value) params.set('station', station.value)
+  if (category.value) params.set('category', category.value)
+  const url = `/api/devices/filters?${params.toString()}`
   try {
     const r: any = await $fetch(url)
     subcategoryOptions.value = r.subcategories || []
@@ -111,6 +112,20 @@ function resetFilters() {
   load()
 }
 
+function exportDevices(all = false) {
+  const params = new URLSearchParams()
+  if (!all) {
+    if (keyword.value.trim()) params.set('q', keyword.value.trim())
+    if (station.value) params.set('station', station.value)
+    if (subsite.value) params.set('subsite', subsite.value)
+    if (category.value) params.set('category', category.value)
+    if (subcategory.value) params.set('subcategory', subcategory.value)
+  }
+  params.set('sort', sort.value)
+  params.set('order', order.value)
+  window.open(`/api/devices/export?${params.toString()}`, '_blank')
+}
+
 onMounted(() => {
   loadFilters()
   load()
@@ -129,6 +144,13 @@ function setSort(col: string) {
     sort.value = col
     order.value = 'asc'
   }
+}
+
+function gotoPage(event: Event) {
+  const target = event.target as HTMLInputElement
+  const v = Math.max(1, Math.min(totalPages.value, Number(target.value) || 1))
+  page.value = v
+  load()
 }
 </script>
 
@@ -214,6 +236,22 @@ function setSort(col: string) {
               重置
             </button>
           </div>
+          <div class="w-28">
+            <button
+              class="w-full rounded-lg border border-primary bg-primary px-3 py-2.5 text-sm text-white hover:bg-primary/90"
+              @click="exportDevices(false)"
+            >
+              导出
+            </button>
+          </div>
+          <div class="w-28">
+            <button
+              class="w-full rounded-lg border border-gray-200 px-3 py-2.5 text-sm text-gray-600 hover:bg-gray-100"
+              @click="exportDevices(true)"
+            >
+              导出全部
+            </button>
+          </div>
         </div>
         <div class="mt-3 flex flex-wrap gap-2 text-xs text-gray-500">
           <span>排序：</span>
@@ -243,8 +281,9 @@ function setSort(col: string) {
         <span v-if="loading" class="ml-2 text-primary">加载中…</span>
       </p>
 
-      <div class="overflow-x-auto rounded-xl bg-white shadow-card">
-        <table class="w-full min-w-[980px] text-left text-sm">
+      <div class="overflow-hidden rounded-xl bg-white shadow-card">
+        <div class="max-h-[60vh] min-h-[320px] overflow-auto">
+          <table class="w-full min-w-[980px] text-left text-sm">
           <thead class="bg-gray-50 text-xs uppercase text-gray-500">
             <tr>
               <th class="px-4 py-3">站点</th>
@@ -279,27 +318,54 @@ function setSort(col: string) {
             </tr>
           </tbody>
         </table>
+        </div>
       </div>
 
       <!-- 分页 -->
-      <div class="mt-6 flex items-center justify-between">
+      <div class="mt-6 flex flex-wrap items-center justify-between gap-3">
         <p class="text-sm text-gray-500">
-          第 {{ result.page }} / {{ totalPages }} 页
+          共 {{ result.total.toLocaleString() }} 条，第 {{ result.page }} / {{ totalPages }} 页
         </p>
-        <div class="flex gap-2">
+        <div class="flex items-center gap-2">
           <button
-            class="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40"
+            class="rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40"
             :disabled="page <= 1"
-            @click="page > 1 && (page--, load())"
+            @click="page = 1; load()"
           >
-            上一页
+            首页
           </button>
           <button
             class="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40"
+            :disabled="page <= 1"
+            @click="page--; load()"
+          >
+            上一页
+          </button>
+          <div class="flex items-center gap-1 rounded-lg border border-gray-200 px-2 py-1">
+            <span class="px-1 text-xs text-gray-400">跳至</span>
+            <input
+              :value="page"
+              type="number"
+              min="1"
+              :max="totalPages"
+              class="w-14 rounded border border-gray-200 px-2 py-1 text-center text-sm outline-none focus:border-primary"
+              @change="gotoPage"
+            />
+            <span class="px-1 text-xs text-gray-400">/ {{ totalPages }} 页</span>
+          </div>
+          <button
+            class="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40"
             :disabled="page >= totalPages"
-            @click="page < totalPages && (page++, load())"
+            @click="page++; load()"
           >
             下一页
+          </button>
+          <button
+            class="rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40"
+            :disabled="page >= totalPages"
+            @click="page = totalPages; load()"
+          >
+            尾页
           </button>
         </div>
       </div>

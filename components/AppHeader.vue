@@ -14,14 +14,15 @@ const navItems = [
   { label: '省市计价数据', to: '/city', module: 'city' },
   { label: '工作台', to: '/projects', module: 'projects' },
 ]
-// 管理模块：仅当用户拥有对应 view 权限时显示
+// 管理模块：默认按 `${module}:view` 判断；也可显式指定 perm
 const adminNavItems = [
   { label: '用户管理', to: '/admin/users', module: 'admin-users' },
   { label: '角色管理', to: '/admin/roles', module: 'admin-roles' },
   { label: '权限管理', to: '/admin/permissions', module: 'admin-permissions' },
+  { label: '设备管理', to: '/admin/devices', module: 'devices', perm: 'devices:edit' },
 ]
 const visibleNav = computed(() => navItems.filter(i => !i.module || can(i.module + ':view')))
-const visibleAdminNav = computed(() => adminNavItems.filter(i => can(i.module + ':view')))
+const visibleAdminNav = computed(() => adminNavItems.filter(i => can(i.perm || `${i.module}:view`)))
 const isActive = (to: string) => route.path === to || (to !== '/' && route.path.startsWith(to))
 
 const allNavItems = computed(() => [...visibleNav.value, ...visibleAdminNav.value])

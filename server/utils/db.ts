@@ -5,6 +5,8 @@ import { mkdirSync, existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 // 造价标准库静态数据（单一真相源，前端 fallback 与种子同源）；库为运行时权威，可经后台管理界面改
 import { standards } from '../../composables/useStandards'
+// RBAC 权限目录：外置配置，新增模块/按钮只需改此文件，db.ts 自动注册
+import { PERMISSION_MODULES, ACTION_NAMES, DEFAULT_ROLES, USER_PERMISSION_PATTERNS, matchesPermissionPattern } from '../config/permissions'
 
 // ── PostgreSQL 连接 ────────────────────────────────────────────────────
 // 优先读 DATABASE_URL（ecosystem.config.cjs 注入）；否则用分项变量拼。
@@ -275,56 +277,62 @@ CREATE TABLE IF NOT EXISTS kv (
   }
 
   // 2) RBAC 种子（首次启动灌入，库非空则不覆盖）
-  const MODULES = [
-    { key: 'standards', name: '造价标准库', actions: ['view', 'create', 'edit', 'delete'] },
-    { key: 'devices', name: '设备价格库', actions: ['view'] },
-    { key: 'industry', name: '行业基准数据分析', actions: ['view'] },
-    { key: 'city', name: '省市计价数据分析', actions: ['view'] },
-    { key: 'projects', name: '工作台', actions: ['view', 'create', 'edit', 'delete'] },
-    { key: 'admin-users', name: '用户管理', actions: ['view', 'create', 'edit', 'delete'] },
-    { key: 'admin-roles', name: '角色管理', actions: ['view', 'create', 'edit', 'delete'] },
-    { key: 'admin-permissions', name: '权限管理', actions: ['view', 'edit'] },
-  ]
-  const ACTION_NAMES: Record<string, string> = { view: '查看', create: '新增', edit: '编辑', delete: '删除' }
-
+  // 权限目录已外置到 server/config/permissions.ts，新增模块/按钮只需改该文件。
   const roleCount = Number((await pool.query('SELECT COUNT(*)::int AS c FROM roles')).rows[0].c)
   if (roleCount === 0) {
+    const values = DEFAULT_ROLES.map((_, i) => `($${i * 4 + 1},$${i * 4 + 2},$${i * 4 + 3},$${i * 4 + 4})`).join(',')
+    const params = DEFAULT_ROLES.flatMap((r) => [r.code, r.name, r.description, r.is_system])
     await pool.query(
-      "INSERT INTO roles (code, name, description, is_system) VALUES ('admin','系统管理员','拥有系统全部权限',1),('user','普通用户','默认注册用户',0) ON CONFLICT DO NOTHING"
+      `INSERT INTO roles (code, name, description, is_system) VALUES ${values} ON CONFLICT DO NOTHING`,
+      params
     )
-    console.log('[seed] roles 已灌 2 条')
+    console.log(`[seed] roles 已灌 ${DEFAULT_ROLES.length} 条`)
   }
 
-  const permCount = Number((await pool.query('SELECT COUNT(*)::int AS c FROM permissions')).rows[0].c)
-  if (permCount === 0) {
+  // 2.1) 权限目录幂等同步：新增/改名的权限自动注册，已有权限不动
+  {
     let sort = 0
-    for (const m of MODULES) {
+    for (const m of PERMISSION_MODULES) {
       await pool.query(
-        'INSERT INTO permissions (code, name, type, module, parent, sort) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING',
+        'INSERT INTO permissions (code, name, type, module, parent, sort) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name, type = EXCLUDED.type, module = EXCLUDED.module, parent = EXCLUDED.parent, sort = EXCLUDED.sort',
         [`m:${m.key}`, m.name, 'module', m.key, null, sort++]
       )
       for (const a of m.actions) {
         await pool.query(
-          'INSERT INTO permissions (code, name, type, module, parent, sort) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING',
+          'INSERT INTO permissions (code, name, type, module, parent, sort) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name, type = EXCLUDED.type, module = EXCLUDED.module, parent = EXCLUDED.parent, sort = EXCLUDED.sort',
           [`${m.key}:${a}`, ACTION_NAMES[a] || a, 'button', m.key, `m:${m.key}`, sort++]
         )
       }
     }
-    console.log('[seed] permissions 已灌若干条')
+    console.log('[seed] permissions 已同步')
   }
 
-  const rpCount = Number((await pool.query('SELECT COUNT(*)::int AS c FROM role_permissions')).rows[0].c)
-  if (rpCount === 0) {
+  // 2.2) 角色-权限自动补齐：admin 拥有全部权限；user 拥有 USER_MODULE_PREFIXES 对应前缀权限
+  {
     const allPerms = (await pool.query('SELECT code FROM permissions')).rows.map((p: any) => p.code)
     const adminId = (await pool.query("SELECT id FROM roles WHERE code='admin'")).rows[0]?.id
     const userId = (await pool.query("SELECT id FROM roles WHERE code='user'")).rows[0]?.id
-    for (const code of allPerms) {
-      await pool.query('INSERT INTO role_permissions (role_id, permission_code) VALUES ($1,$2) ON CONFLICT DO NOTHING', [adminId, code])
-      if (['standards:', 'devices:', 'industry:', 'city:', 'projects:'].some((x) => code.startsWith(x))) {
-        await pool.query('INSERT INTO role_permissions (role_id, permission_code) VALUES ($1,$2) ON CONFLICT DO NOTHING', [userId, code])
+    if (adminId) {
+      for (const code of allPerms) {
+        await pool.query('INSERT INTO role_permissions (role_id, permission_code) VALUES ($1,$2) ON CONFLICT DO NOTHING', [adminId, code])
       }
     }
-    console.log('[seed] role_permissions 已分配')
+    if (userId) {
+      for (const code of allPerms) {
+        if (USER_PERMISSION_PATTERNS.some((p) => matchesPermissionPattern(code, p))) {
+          await pool.query('INSERT INTO role_permissions (role_id, permission_code) VALUES ($1,$2) ON CONFLICT DO NOTHING', [userId, code])
+        }
+      }
+      // 清理 user 角色中已不在 USER_PERMISSION_PATTERNS 内的历史权限（如配置收缩时）
+      const toRemove = allPerms.filter((code) => !USER_PERMISSION_PATTERNS.some((p) => matchesPermissionPattern(code, p)))
+      if (toRemove.length) {
+        await pool.query(
+          'DELETE FROM role_permissions WHERE role_id = $1 AND permission_code = ANY($2::text[])'
+          [userId, toRemove]
+        )
+      }
+    }
+    console.log('[seed] role_permissions 已补齐')
   }
 
   // 3) 存量/迁移用户并入 user_roles（按 users.role；迁移脚本灌入的账号也在此补齐）

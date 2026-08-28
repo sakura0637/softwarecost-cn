@@ -21,6 +21,7 @@ export default defineEventHandler(async (event) => {
 
   const resp: any = { stations, categories }
 
+  // 子站：必须选了站点才聚合；全部站点时不按站点过滤（但前端目前仍只在 station 非空时显示）
   if (station) {
     const subsites = (
       await db
@@ -30,19 +31,28 @@ export default defineEventHandler(async (event) => {
         .all(station, '') as any[]
     ).map((r: any) => r.subsite)
     resp.subsites = subsites
+  }
 
-    const subParams: any[] = [station]
-    let subWhere = 'station = ?'
+  // 子分类：支持按站点/分类收敛；未传站点时返回全局子分类聚合
+  {
+    const subParams: any[] = []
+    const conditions: string[] = ['subcategory IS NOT NULL', "subcategory <> ?"]
+    subParams.push('')
+    if (station) {
+      conditions.push('station = ?')
+      subParams.push(station)
+    }
     if (category) {
-      subWhere += ' AND category = ?'
+      conditions.push('category = ?')
       subParams.push(category)
     }
+    const subWhere = conditions.join(' AND ')
     const subcategories = (
       await db
         .prepare(
-          `SELECT DISTINCT subcategory FROM device_prices WHERE ${subWhere} AND subcategory IS NOT NULL AND subcategory <> ? ORDER BY subcategory`
+          `SELECT DISTINCT subcategory FROM device_prices WHERE ${subWhere} ORDER BY subcategory`
         )
-        .all(...subParams, '') as any[]
+        .all(...subParams) as any[]
     ).map((r: any) => r.subcategory)
     resp.subcategories = subcategories
   }
