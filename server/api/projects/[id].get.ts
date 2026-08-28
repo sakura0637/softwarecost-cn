@@ -7,12 +7,12 @@ export default defineEventHandler(async (event) => {
   if (!userId) throw createError({ statusCode: 401, statusMessage: '未登录' })
 
   const id = Number(event.context.params!.id)
-  const project = db
+  const project = await db
     .prepare('SELECT * FROM projects WHERE id = ? AND user_id = ?')
     .get(id, userId)
   if (!project) throw createError({ statusCode: 404, statusMessage: '项目不存在' })
 
-  const functionPoints = db
+  const functionPoints = await db
     .prepare('SELECT * FROM function_points WHERE project_id = ? ORDER BY seq, id')
     .all(id)
   return { project, functionPoints }
