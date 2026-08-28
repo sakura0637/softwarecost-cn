@@ -74,6 +74,6 @@ export default defineEventHandler(async (event) => {
   const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })
 
   setHeader(event, 'Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-  setHeader(event, 'Content-Disposition', 'attachment; filename="设备价格库.xlsx"')
+  setHeader(event, 'Content-Disposition', `attachment; filename="device_prices.xlsx"; filename*=UTF-8''${encodeURIComponent('设备价格库.xlsx')}`)
   return buf
 })
