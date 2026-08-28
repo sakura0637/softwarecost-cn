@@ -29,7 +29,9 @@ export default defineEventHandler(async (event) => {
   const std =
     standards.find((s) => s.id === standardId) ||
     standards.find((s) => s.complete) ||
+    standards.find((s) => s.usable) ||
     standards[0]
+  if (!std) throw createError({ statusCode: 400, statusMessage: '无可用计价标准' })
 
   // —— 费率：标准自带优先，其次按城市覆盖 ——
   let rate = std.rate
@@ -53,8 +55,18 @@ export default defineEventHandler(async (event) => {
     })
   }
 
-  // —— 生产率：可覆盖（P25/P50/P75…） ——
+  // —— 生产率：可覆盖（P25/P50/P75…）——
+  // 标准本身没有生产率数据的方法类标准（如 GB/T 36964）不做兜底填充，
+  // 此处必须拦住，否则会算出 NaN 或无意义的费用。
   const pdr = Number(body.pdr) > 0 ? Number(body.pdr) : std.pdr
+  if (!pdr || !Number.isFinite(pdr)) {
+    const pick = standards.filter((s) => s.usable).map((s) => s.name)
+    throw createError({
+      statusCode: 400,
+      statusMessage:
+        `标准「${std.name}」未给定基准生产率，无法测算。可改用：${pick.slice(0, 4).join('、')}`,
+    })
+  }
   const vaf = Math.max(0.5, Math.min(1.5, Number(body.vaf) || 1.0))
 
   const fps = (await db

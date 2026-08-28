@@ -26,8 +26,9 @@ export interface PricingStandard {
   edition: string
   hm: number
   rate: number | null
-  pdr: number
+  pdr: number | null
   pdrOptions: PdrOption[]
+  usable: boolean // 能否用于测算（false = 缺少生产率或费率，选城市也补不上）
   productivity: number | null
   fpPrice: number | null
   laborRateWan: number | null
@@ -61,7 +62,11 @@ const PROVINCE_CITY: Record<string, string> = {
 }
 
 const FALLBACK_HM = 174 // 8h/天 × 21.75 天/月
-const FALLBACK_PDR = 6.72 // CSBMK 2025 全行业 P50
+// 生产率兜底值按「开发 / 运维」分开，且仅在该标准确有生产率参数、只是没给数值时使用
+const FALLBACK_PDR_DEV = 6.72 // CSBMK 2025 全行业 P50（开发）
+const FALLBACK_PDR_MAINT = 1.07 // DB11/T 1424-2017 北京运维 P50（运维）
+// ⚠️ 两者不可混用：运维生产率比开发小一个数量级（0.74~1.07 vs 6.72~7.16 人时/FP）。
+//    把开发生产率套到运维标准上会算出荒谬的运维单价，务必按 category 区分。
 
 function pickDefaultPdr(options: PdrOption[]): number | null {
   if (!options.length) return null
@@ -154,10 +159,12 @@ export async function buildPricingStandards() {
       }
     }
 
-    // ---- pdr 选项（区分开发/运维，避免混用） ----
+    // ---- pdr 选项（严格区分开发/运维，避免把开发生产率套到运维标准上） ----
     const pdrOptions: PdrOption[] = []
+    let hasProductivityParam = false
     for (const p of items) {
       if (p.param_type !== 'productivity') continue
+      hasProductivityParam = true
       const isMaint = /运维/.test(p.param_name)
       if ((category === '运维') !== isMaint) continue
       for (const v of parseValues(p)) {
@@ -165,11 +172,19 @@ export async function buildPricingStandards() {
         if (n != null) pdrOptions.push({ label: v.label, value: n })
       }
     }
-    let pdr = pickDefaultPdr(pdrOptions)
-    if (pdr == null) {
-      pdr = FALLBACK_PDR
-      filled.push(`pdr 取 CSBMK 2025 全行业 P50 = ${FALLBACK_PDR}`)
+    let pdr: number | null = pickDefaultPdr(pdrOptions)
+    if (pdr == null && hasProductivityParam) {
+      // 标准有生产率参数、只是没给具体数值（如山东「按业务领域 P50 参考CSBMK」），
+      // 属于"明确指向外部基准"，按类别取对应兜底值是合理的。
+      pdr = category === '运维' ? FALLBACK_PDR_MAINT : FALLBACK_PDR_DEV
+      filled.push(
+        category === '运维'
+          ? `pdr 取北京运维标准 P50 = ${FALLBACK_PDR_MAINT} 人时/FP`
+          : `pdr 取 CSBMK 2025 全行业 P50 = ${FALLBACK_PDR_DEV} 人时/FP`
+      )
     }
+    // 完全没有生产率参数的标准（GB/T 36964、GB/T 28827.7、DB14/T 2163 等方法/因子标准）
+    // 保持 pdr=null 并计入 missing —— 不做兜底，否则会伪装成可测算、算出无意义的结果。
 
     // ---- 调整因子 ----
     const factorOf = (keywords: string[]) => {
@@ -189,13 +204,16 @@ export async function buildPricingStandards() {
 
     const missing: string[] = []
     if (rate == null) missing.push('人月费率')
-    if (!pdrOptions.length) missing.push('基准生产率')
+    if (pdr == null) missing.push('基准生产率')
 
-    const complete = rate != null && pdrOptions.length > 0 && filled.length === 0
+    // usable：能否用于测算。有生产率，且（有费率 或 选城市后可取到费率）
+    // complete：参数全由标准给定、无需补齐、也无需补选城市
+    const usable = pdr != null && (rate != null || rateMode === 'city')
+    const complete = usable && filled.length === 0 && rate != null
 
     let productivity: number | null = null
     let fpPrice: number | null = null
-    if (rate != null) {
+    if (rate != null && pdr != null) {
       productivity = Math.round((hm / pdr) * 100) / 100
       fpPrice = Math.round((rate * pdr) / hm)
     }
@@ -219,6 +237,7 @@ export async function buildPricingStandards() {
       factors,
       rateMode,
       suggestedCity,
+      usable,
       complete,
       missing,
       filled,

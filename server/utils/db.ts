@@ -461,9 +461,11 @@ CREATE TABLE IF NOT EXISTS kv (
   }
 
   // 4.2) 省市计价对比（provincial_pricing）：按种子版本重灌（版本号存在 kv 表）
-  //      v2 修正功能点单价量纲：原为 rate÷pdr（量纲无意义、单价虚高约 3.4 倍），
-  //      应为 rate×pdr÷hm。存量数据必须强制刷新，故改为版本驱动而非 COUNT=0 才灌。
-  const PROVINCIAL_SEED_VERSION = '2'
+  //      v2 修正功能点单价量纲：原为 rate÷pdr（量纲无意义、单价虚高约 3.4 倍），应为 rate×pdr÷hm。
+  //      v3 北京基准生产率改用「电子政务 P50」=6.65（DB11/T 1010 对政务项目的规定），
+  //          与 /api/pricing-standards 的北京档位对齐（1032 → 963 元/FP）。
+  //      改种子版本号即可强制刷新存量数据（比 COUNT=0 才灌可靠）。
+  const PROVINCIAL_SEED_VERSION = '3'
   const ppVer = (await pool.query("SELECT v FROM kv WHERE k = 'provincial_seed_version'")).rows[0]?.v
   if (ppVer !== PROVINCIAL_SEED_VERSION && provincialPricing.length > 0) {
     await pool.query('DELETE FROM provincial_pricing')

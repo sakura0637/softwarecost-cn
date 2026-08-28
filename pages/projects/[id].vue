@@ -254,7 +254,9 @@ const loadStandards = async () => {
     const res: any = await api('/api/pricing-standards')
     standards.value = res.standards || []
     cities.value = res.cities || []
-    if (!stdId.value && standards.value.length) stdId.value = standards.value[0].id
+    if (!stdId.value && standards.value.length) {
+      stdId.value = (standards.value.find((s: any) => s.usable) || standards.value[0]).id
+    }
   } catch {
     standards.value = []
     cities.value = []
@@ -365,17 +367,25 @@ onMounted(async () => {
             <div>
               <label class="mb-2 block text-sm font-medium text-gray-700">计价标准</label>
               <select v-model="stdId" class="w-full rounded-lg border border-gray-200 px-4 py-2.5 text-sm outline-none focus:border-primary">
-                <optgroup label="参数完整（标准自带人月费率）">
+                <optgroup label="参数完整（标准自带费率与生产率）">
                   <option v-for="s in standards.filter((x: any) => x.complete)" :key="s.id" :value="s.id">
                     {{ s.name }} · {{ s.region }}（{{ s.fpPrice }} 元/FP）
                   </option>
                 </optgroup>
-                <optgroup label="需按城市取费 / 参数已补齐">
-                  <option v-for="s in standards.filter((x: any) => !x.complete)" :key="s.id" :value="s.id">
+                <optgroup label="可用（需按城市取费 / 部分参数已补齐）">
+                  <option v-for="s in standards.filter((x: any) => !x.complete && x.usable)" :key="s.id" :value="s.id">
                     {{ s.name }} · {{ s.region }}（{{ s.fpPrice ? s.fpPrice + ' 元/FP' : '需选城市' }}）
                   </option>
                 </optgroup>
+                <optgroup label="不可测算（缺少关键参数）">
+                  <option v-for="s in standards.filter((x: any) => !x.usable)" :key="s.id" :value="s.id">
+                    {{ s.name }} · {{ s.region }}（缺{{ s.missing.join('、') }}）
+                  </option>
+                </optgroup>
               </select>
+              <p v-if="selectedStd && !selectedStd.usable" class="mt-2 text-xs text-amber-600">
+                ⚠ 该标准缺少「{{ selectedStd.missing.join('、') }}」，无法测算，请改用其它标准。
+              </p>
 
               <label class="mb-2 mt-4 block text-sm font-medium text-gray-700">基准生产率（人时/功能点）</label>
               <select v-model.number="pdr" class="w-full rounded-lg border border-gray-200 px-4 py-2.5 text-sm outline-none focus:border-primary">

@@ -225,7 +225,9 @@ const PROVINCIAL_INPUT: ProvincialInput[] = [
     level: 'provincial',
     hm: 176,
     rate: 25500,
-    pdr: PDR_ALL.p50,
+    // 北京标准 DB11/T 1010 规定政务项目取「电子政务 P50」=6.65，非全行业 7.12。
+    // 与 /api/pricing-standards 里北京档位保持一致（963 元/FP）。
+    pdr: PDR_GOV.p50,
     cf: 1.22,
     source: 'DB 11/T 1010—2019',
     year: '2019',
@@ -239,7 +241,7 @@ export const provincialPricing: ProvincialPricing[] = PROVINCIAL_INPUT.map((p) =
     id: p.id,
     region: p.region,
     level: p.level,
-    function_point_price: Math.round(fpPrice), // 全国941 / 四川818 / 北京1032
+    function_point_price: Math.round(fpPrice), // 全国941 / 四川818 / 北京963
     productivity: Math.round(productivity * 100) / 100,
     labor_rate: Math.round((p.rate / 10000) * 100) / 100,
     hm: p.hm,
