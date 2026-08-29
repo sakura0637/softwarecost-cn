@@ -1,7 +1,7 @@
 import db from '../../../utils/db'
 import { getAuthUser } from '../../../utils/auth'
 import { buildPricingStandards } from '../../../utils/pricingStandards'
-import { runPricingEngine, nonFunctionalFactor, type FactorInput } from '../../../../shared/pricingEngine'
+import { runPricingEngine, nonFunctionalFactor, type FactorInput } from '@/shared/pricingEngine'
 import { readBody, createError } from 'h3'
 
 // 项目造价测算 —— GB/T 36964 完整链路

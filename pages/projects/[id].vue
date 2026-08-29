@@ -7,7 +7,7 @@ const { api } = useAuth()
 const projectId = Number(route.params.id)
 
 // 计价引擎：与服务端共用同一份实现（shared/），保证前端预览与后端测算结果完全一致
-import { runPricingEngine, nonFunctionalFactor } from '../../shared/pricingEngine'
+import { runPricingEngine, nonFunctionalFactor } from '@/shared/pricingEngine'
 
 // UFP 权重：IFPUG/NESMA 标准常量（非示例值）
 const UFP_WEIGHT: Record<string, Record<string, number>> = {
