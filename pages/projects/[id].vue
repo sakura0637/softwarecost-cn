@@ -371,52 +371,20 @@ const exportReport = async () => {
     /* 忽略保存失败 */
   }
 
-  const lines: string[] = []
-  lines.push('软件造价测算报告')
-  lines.push('项目名称：' + (project.value?.name || ''))
-  lines.push('功能点方法：' + (project.value?.method || '').toUpperCase())
-  lines.push('计价标准：' + s.name + '（' + s.code + '）')
-  lines.push('发布机构：' + s.org)
-  if (city.value) lines.push('取费城市：' + city.value)
-  lines.push('')
-  lines.push('功能点明细（四层模块）：')
-  lines.push('序号\t层级\t名称\t类型\t复杂度\tUFP')
-  editableFps.value.forEach((fp, i) => {
-    const lv = Number(fp.level)
-    const indent = '　'.repeat(Math.max(0, lv - 1))
-    const ufp = lv === 4 ? fp.ufp : subtreeUfp(fp._key)
-    lines.push(`${i + 1}\t${lv}\t${indent}${fp.name}\t${fp.type || '-'}\t${lv === 4 ? fp.complexity : '-'}\t${ufp}`)
-  })
-  lines.push('')
-  lines.push('未调整功能点合计(UFP)：' + totalUFP.value)
-  lines.push('基准生产率(人时/功能点)：' + effectivePdr.value)
-  lines.push('生产率(功能点/人月)：' + productivity.value)
-  lines.push('人月折算系数(人时/人月)：' + s.hm)
-  lines.push('人月费率(元/人月)：' + effectiveRate.value)
-  lines.push('功能点单价(元/功能点)：' + fpPrice.value)
-  lines.push('')
-  lines.push('测算过程：')
-  if (engine.value) {
-    for (const st of engine.value.steps) {
-      lines.push(`  ${st.label}\t${st.value}\t${st.unit}\t${st.formula}`)
-    }
-    if (engine.value.durationMonths != null) lines.push('工期(月)：' + engine.value.durationMonths)
+  // 拉取 Excel 报告（带鉴权，二进制 blob 下载，四工作表）
+  try {
+    const blob = await api('/api/projects/' + projectId + '/report?format=xlsx', {
+      responseType: 'blob',
+    })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `造价报告_${project.value?.name || projectId}.xlsx`
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch (err: any) {
+    alert('导出失败：' + (err?.message || '未知错误'))
   }
-  lines.push('')
-  lines.push('测算造价(元)：' + cost.value)
-  lines.push('折合(万元)：' + (cost.value / 10000).toFixed(2))
-  if (s.filled.length) {
-    lines.push('')
-    lines.push('参数补齐说明：' + s.filled.join('；'))
-  }
-
-  const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `造价报告_${project.value?.name || projectId}.txt`
-  a.click()
-  URL.revokeObjectURL(url)
 }
 
 const loadStandards = async () => {
