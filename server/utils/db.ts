@@ -185,11 +185,18 @@ CREATE TABLE IF NOT EXISTS function_points (
   ufp         INTEGER      NOT NULL DEFAULT 0,
   note        TEXT,
   source      VARCHAR(8)   NOT NULL DEFAULT 'ai',
+  -- 四层模块：level 1~3 为模块层级（UFP 由子节点汇总），level 4 为功能点（参与计算）
+  level       INTEGER      NOT NULL DEFAULT 4,
+  parent_id   INTEGER      REFERENCES function_points(id) ON DELETE CASCADE,
   created_at  TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
+-- 兼容旧库：存量行默认 level=4（功能点）、parent_id 为空，行为与升级前完全一致
+ALTER TABLE function_points ADD COLUMN IF NOT EXISTS level INTEGER NOT NULL DEFAULT 4;
+ALTER TABLE function_points ADD COLUMN IF NOT EXISTS parent_id INTEGER;
 
 CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_id);
 CREATE INDEX IF NOT EXISTS idx_fp_project    ON function_points(project_id);
+CREATE INDEX IF NOT EXISTS idx_fp_parent     ON function_points(parent_id);
 
 CREATE TABLE IF NOT EXISTS roles (
   id          SERIAL PRIMARY KEY,

@@ -71,8 +71,11 @@ const fpPrice = computed(() => {
   return Math.round((effectiveRate.value * effectivePdr.value) / s.hm)
 })
 
+// 只统计功能点层（level 4）；1~3 级模块的 UFP 由子节点汇总，避免重复计入
 const totalUFP = computed(() =>
-  editableFps.value.reduce((s, fp) => s + (Number(fp.ufp) || 0), 0)
+  editableFps.value
+    .filter((fp) => Number(fp.level) === 4)
+    .reduce((s, fp) => s + (Number(fp.ufp) || 0), 0)
 )
 // ---- 调整因子（未设置即取中性值 1，不参与调整）----
 const fCf = ref<number | null>(null)
@@ -154,7 +157,7 @@ const loadProject = async () => {
     const res: any = await api('/api/projects/' + projectId)
     project.value = res.project
     fps.value = res.functionPoints || []
-    editableFps.value = JSON.parse(JSON.stringify(fps.value))
+    editableFps.value = hydrate(fps.value)
     // 仅当项目已存的标准仍存在于库里才沿用，否则回落到标准清单的第一条
     if (res.project.standard_id && standards.value.some((s) => s.id === res.project.standard_id)) {
       stdId.value = res.project.standard_id
@@ -210,7 +213,7 @@ const runAnalyze = async () => {
       method: 'POST'
     })
     fps.value = res.functionPoints || []
-    editableFps.value = JSON.parse(JSON.stringify(fps.value))
+    editableFps.value = hydrate(fps.value)
     analyzingMsg.value = `AI 识别完成，共 ${fps.value.length} 个功能点`
   } catch (err: any) {
     const msg = err.data?.statusMessage || err.message || '识别失败'
@@ -222,8 +225,47 @@ const runAnalyze = async () => {
   }
 }
 
+// ---- 四层模块：level 1~3 为模块层级（UFP 由子节点汇总），level 4 为功能点 ----
+let keySeed = 0
+const newKey = () => `k${Date.now().toString(36)}_${keySeed++}`
+
+// 载入时补齐稳定 key 与层级；历史数据没有 level，默认 4（功能点）。
+// 同时把后端返回的 parent_id 翻译成前端的 parentKey（本接口删除重建后 id 会变，不能直接引用）
+function hydrate(rows: any[]): any[] {
+  const list = (rows || []).map((r) => ({
+    ...r,
+    _key: r._key || newKey(),
+    level: [1, 2, 3, 4].includes(Number(r.level)) ? Number(r.level) : 4,
+  }))
+  const idToKey = new Map<any, string>(list.map((r: any) => [r.id, r._key]))
+  return list.map((r) => ({
+    ...r,
+    parentKey: r.parent_id != null ? idToKey.get(r.parent_id) ?? null : r.parentKey ?? null,
+  }))
+}
+
+// 新增模块层级行（level 1~3），作为顶层分组
+const addModuleRow = (level: number) => {
+  editableFps.value.push({
+    _key: newKey(),
+    level,
+    parentKey: null,
+    name: `新${level}级模块`,
+    type: '',
+    complexity: '中',
+    ret: 0,
+    det: 0,
+    ufp: 0,
+    note: '',
+    source: 'manual'
+  })
+}
+
 const addManualRow = () => {
   editableFps.value.push({
+    _key: newKey(),
+    level: 4,
+    parentKey: null,
     name: '新功能项',
     type: 'ILF',
     complexity: '中',
@@ -235,9 +277,55 @@ const addManualRow = () => {
   })
 }
 
-const recomputeRow = (fp: any) => {
-  fp.ufp = computeUFP(fp.type, fp.complexity)
+// 在指定模块下插入子节点（只有 1~3 级模块可加子级）
+const addChildRow = (parent: any) => {
+  const lv = Number(parent?.level)
+  if (!parent || !lv || lv >= 4) return
+  const childLevel = lv + 1
+  const idx = editableFps.value.findIndex((r) => r._key === parent._key)
+  if (idx < 0) return
+  const isLeaf = childLevel === 4
+  editableFps.value.splice(idx + 1, 0, {
+    _key: newKey(),
+    level: childLevel,
+    parentKey: parent._key,
+    name: isLeaf ? '新功能项' : `新${childLevel}级模块`,
+    type: isLeaf ? 'ILF' : '',
+    complexity: '中',
+    ret: 0,
+    det: 0,
+    ufp: isLeaf ? 10 : 0,
+    note: '',
+    source: 'manual'
+  })
 }
+
+// 删除一行及其所有子孙
+const removeRow = (row: any) => {
+  const keys = new Set<string>([row._key])
+  let grew = true
+  while (grew) {
+    grew = false
+    for (const r of editableFps.value) {
+      if (r.parentKey && keys.has(r.parentKey) && !keys.has(r._key)) {
+        keys.add(r._key)
+        grew = true
+      }
+    }
+  }
+  editableFps.value = editableFps.value.filter((r) => !keys.has(r._key))
+}
+
+const recomputeRow = (fp: any) => {
+  // 模块层级（1~3）不计自身 UFP，由子节点汇总
+  fp.ufp = Number(fp.level) === 4 ? computeUFP(fp.type, fp.complexity) : 0
+}
+
+// 父节点 UFP = 子孙中「功能点层（level 4）」之和
+const subtreeUfp = (key: string): number =>
+  editableFps.value
+    .filter((r) => r.parentKey === key)
+    .reduce((s, c) => s + (Number(c.level) === 4 ? Number(c.ufp) || 0 : subtreeUfp(c._key)), 0)
 
 const saveFps = async () => {
   saving.value = true
@@ -248,7 +336,7 @@ const saveFps = async () => {
       body: { functionPoints: editableFps.value }
     })
     fps.value = res.functionPoints || []
-    editableFps.value = JSON.parse(JSON.stringify(fps.value))
+    editableFps.value = hydrate(fps.value)
     alert('功能点已保存')
   } catch (err: any) {
     alert('保存失败：' + (err.data?.statusMessage || err.message))
@@ -291,10 +379,13 @@ const exportReport = async () => {
   lines.push('发布机构：' + s.org)
   if (city.value) lines.push('取费城市：' + city.value)
   lines.push('')
-  lines.push('功能点明细：')
-  lines.push('序号\t名称\t类型\t复杂度\tUFP')
+  lines.push('功能点明细（四层模块）：')
+  lines.push('序号\t层级\t名称\t类型\t复杂度\tUFP')
   editableFps.value.forEach((fp, i) => {
-    lines.push(`${i + 1}\t${fp.name}\t${fp.type}\t${fp.complexity}\t${fp.ufp}`)
+    const lv = Number(fp.level)
+    const indent = '　'.repeat(Math.max(0, lv - 1))
+    const ufp = lv === 4 ? fp.ufp : subtreeUfp(fp._key)
+    lines.push(`${i + 1}\t${lv}\t${indent}${fp.name}\t${fp.type || '-'}\t${lv === 4 ? fp.complexity : '-'}\t${ufp}`)
   })
   lines.push('')
   lines.push('未调整功能点合计(UFP)：' + totalUFP.value)
@@ -393,12 +484,17 @@ onMounted(async () => {
         <!-- 步骤二：功能点清单 -->
         <div class="mb-6 rounded-2xl border border-gray-100 bg-white p-6 shadow-sm">
           <div class="mb-4 flex items-center justify-between">
-            <h2 class="text-lg font-bold text-gray-900">② 功能点清单（可编辑）</h2>
+            <h2 class="text-lg font-bold text-gray-900">② 功能点清单（四层模块，可编辑）</h2>
             <div class="flex gap-2">
-              <button class="rounded-lg border border-gray-200 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50" @click="addManualRow">+ 手动添加</button>
+              <button class="rounded-lg border border-gray-200 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50" @click="addModuleRow(1)">+ 一级模块</button>
+              <button class="rounded-lg border border-gray-200 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50" @click="addManualRow">+ 功能点</button>
               <button class="btn-primary px-3 py-1.5 text-sm" :disabled="saving" @click="saveFps">保存修改</button>
             </div>
           </div>
+          <p class="mb-3 text-xs text-gray-400">
+            一~三级为模块层级（UFP 由下级自动汇总，不重复计入合计），四级为功能点（按类型与复杂度计算 UFP）。
+            在模块行点「+子级」可继续下钻。
+          </p>
 
           <div v-if="editableFps.length === 0" class="py-10 text-center text-sm text-gray-400">
             暂无功能点。上传需求后点击「AI 识别功能点」，或手动添加。
@@ -407,34 +503,78 @@ onMounted(async () => {
             <table class="w-full text-sm">
               <thead>
                 <tr class="border-b border-gray-200 text-left text-xs text-gray-500">
-                  <th class="px-2 py-2">名称</th>
+                  <th class="px-2 py-2">名称 / 模块</th>
+                  <th class="px-2 py-2">层级</th>
                   <th class="px-2 py-2">类型</th>
                   <th class="px-2 py-2">复杂度</th>
                   <th class="px-2 py-2">RET</th>
                   <th class="px-2 py-2">DET</th>
                   <th class="px-2 py-2">UFP</th>
-                  <th class="px-2 py-2">来源</th>
+                  <th class="px-2 py-2">操作</th>
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="(fp, i) in editableFps" :key="i" class="border-b border-gray-100">
-                  <td class="px-2 py-2"><input v-model="fp.name" class="w-40 rounded border border-gray-200 px-2 py-1 text-xs" /></td>
+                <tr
+                  v-for="fp in editableFps"
+                  :key="fp._key"
+                  class="border-b border-gray-100"
+                  :class="Number(fp.level) < 4 ? 'bg-gray-50' : ''"
+                >
                   <td class="px-2 py-2">
-                    <select v-model="fp.type" class="rounded border border-gray-200 px-2 py-1 text-xs" @change="recomputeRow(fp)">
+                    <div class="flex items-center gap-1" :style="{ paddingLeft: (Number(fp.level) - 1) * 14 + 'px' }">
+                      <span v-if="Number(fp.level) < 4" class="text-gray-400">▸</span>
+                      <input
+                        v-model="fp.name"
+                        class="w-40 rounded border border-gray-200 px-2 py-1 text-xs"
+                        :class="Number(fp.level) < 4 ? 'font-medium text-gray-800' : ''"
+                      />
+                    </div>
+                  </td>
+                  <td class="px-2 py-2">
+                    <select v-model.number="fp.level" class="rounded border border-gray-200 px-1.5 py-1 text-xs" @change="recomputeRow(fp)">
+                      <option :value="1">一级</option>
+                      <option :value="2">二级</option>
+                      <option :value="3">三级</option>
+                      <option :value="4">功能点</option>
+                    </select>
+                  </td>
+                  <td class="px-2 py-2">
+                    <select v-if="Number(fp.level) === 4" v-model="fp.type" class="rounded border border-gray-200 px-2 py-1 text-xs" @change="recomputeRow(fp)">
                       <option v-for="t in ['ILF','EIF','EI','EO','EQ']" :key="t" :value="t">{{ t }}</option>
                     </select>
+                    <span v-else class="text-xs text-gray-400">—</span>
                   </td>
                   <td class="px-2 py-2">
-                    <select v-model="fp.complexity" class="rounded border border-gray-200 px-2 py-1 text-xs" @change="recomputeRow(fp)">
+                    <select v-if="Number(fp.level) === 4" v-model="fp.complexity" class="rounded border border-gray-200 px-2 py-1 text-xs" @change="recomputeRow(fp)">
                       <option v-for="c in ['低','中','高']" :key="c" :value="c">{{ c }}</option>
                     </select>
+                    <span v-else class="text-xs text-gray-400">—</span>
                   </td>
-                  <td class="px-2 py-2"><input v-model.number="fp.ret" type="number" class="w-14 rounded border border-gray-200 px-2 py-1 text-xs" /></td>
-                  <td class="px-2 py-2"><input v-model.number="fp.det" type="number" class="w-14 rounded border border-gray-200 px-2 py-1 text-xs" /></td>
-                  <td class="px-2 py-2 font-semibold text-primary">{{ fp.ufp }}</td>
-                  <td class="px-2 py-2 text-xs text-gray-400">{{ fp.source === 'manual' ? '手动' : 'AI' }}</td>
+                  <td class="px-2 py-2">
+                    <input v-if="Number(fp.level) === 4" v-model.number="fp.ret" type="number" class="w-14 rounded border border-gray-200 px-2 py-1 text-xs" />
+                    <span v-else class="text-xs text-gray-400">—</span>
+                  </td>
+                  <td class="px-2 py-2">
+                    <input v-if="Number(fp.level) === 4" v-model.number="fp.det" type="number" class="w-14 rounded border border-gray-200 px-2 py-1 text-xs" />
+                    <span v-else class="text-xs text-gray-400">—</span>
+                  </td>
+                  <td class="px-2 py-2 font-semibold" :class="Number(fp.level) === 4 ? 'text-primary' : 'text-gray-700'">
+                    <span v-if="Number(fp.level) === 4">{{ fp.ufp }}</span>
+                    <span v-else :title="'下级汇总（不计入合计）'">{{ subtreeUfp(fp._key) }}</span>
+                  </td>
+                  <td class="whitespace-nowrap px-2 py-2">
+                    <button v-if="Number(fp.level) < 4" class="mr-2 text-xs text-primary hover:underline" @click="addChildRow(fp)">+子级</button>
+                    <button class="text-xs text-red-500 hover:underline" @click="removeRow(fp)">删除</button>
+                  </td>
                 </tr>
               </tbody>
+              <tfoot>
+                <tr class="border-t-2 border-gray-200 text-sm font-semibold">
+                  <td class="px-2 py-2 text-gray-700" colspan="6">功能点合计（仅统计功能点层）</td>
+                  <td class="px-2 py-2 text-primary">{{ totalUFP }}</td>
+                  <td></td>
+                </tr>
+              </tfoot>
             </table>
           </div>
         </div>
