@@ -6,6 +6,9 @@ const router = useRouter()
 const { api } = useAuth()
 const projectId = Number(route.params.id)
 
+// 计价引擎：与服务端共用同一份实现（shared/），保证前端预览与后端测算结果完全一致
+import { runPricingEngine, nonFunctionalFactor } from '../../shared/pricingEngine'
+
 // UFP 权重：IFPUG/NESMA 标准常量（非示例值）
 const UFP_WEIGHT: Record<string, Record<string, number>> = {
   ILF: { 低: 7, 中: 10, 高: 15 },
@@ -37,7 +40,6 @@ const cities = ref<any[]>([])
 const stdId = ref('')
 const pdr = ref<number | null>(null)
 const city = ref('')
-const vaf = ref(1.0)
 
 const selectedStd = computed<any | null>(
   () => standards.value.find((s) => s.id === stdId.value) || standards.value[0] || null
@@ -72,19 +74,78 @@ const fpPrice = computed(() => {
 const totalUFP = computed(() =>
   editableFps.value.reduce((s, fp) => s + (Number(fp.ufp) || 0), 0)
 )
-const adjustedUFP = computed(() =>
-  Math.round(totalUFP.value * vaf.value * 100) / 100
-)
-const cost = computed(() => (fpPrice.value ? Math.round(adjustedUFP.value * fpPrice.value) : 0))
-const months = computed(() =>
-  productivity.value ? Math.round((adjustedUFP.value / productivity.value) * 100) / 100 : null
+// ---- 调整因子（未设置即取中性值 1，不参与调整）----
+const fCf = ref<number | null>(null)
+const fReuse = ref<number | null>(null)
+const fAppType = ref<number | null>(null)
+const fPlatform = ref<number | null>(null)
+const fTeam = ref<number | null>(null)
+const fIntegrity = ref<number | null>(null)
+const fTeamSize = ref<number | null>(null)
+
+// 软件完整性级别：标准参数里一般不给，取 GB/T 28827.7 的通用档位
+const INTEGRITY_OPTS = [
+  { label: '无明确 / CD 级', factor: 1.0 },
+  { label: 'AB 级（含特殊设计）', factor: 1.1 },
+  { label: 'A 级（全生命周期特殊措施）', factor: 1.3 },
+]
+// 非功能性特征：4 项，勾选=有明示要求(+1)，未勾选=无明示(-1)
+const NF_ITEMS = ['性能效率', '兼容性', '可靠性', '可移植性']
+const nfEnabled = ref(false)
+const nfChecked = ref<boolean[]>([false, false, false, false])
+
+function resetFactors() {
+  fCf.value = null
+  fReuse.value = null
+  fAppType.value = null
+  fPlatform.value = null
+  fTeam.value = null
+  fIntegrity.value = null
+  fTeamSize.value = null
+  nfEnabled.value = false
+  nfChecked.value = [false, false, false, false]
+}
+
+// 只保留数值型选项（标准里有的填的是"参考CSBMK"这类非数值说明）
+const numOpts = (arr: any[]) =>
+  (arr || []).filter((o: any) => Number.isFinite(Number(o.factor)))
+
+const nfFactor = computed(() =>
+  nfEnabled.value ? nonFunctionalFactor(nfChecked.value.reduce((s, c) => s + (c ? 1 : -1), 0)) : 1
 )
 
-// 切换标准时，把生产率与城市重置为该标准的默认值
+// 完整测算链：UFP → US(复用) → S(规模变更) → UE → AE(SWF×RDF) → 人月 → 费用
+const engine = computed(() => {
+  const s = selectedStd.value
+  if (!s || !effectiveRate.value || !effectivePdr.value) return null
+  return runPricingEngine({
+    totalUFP: totalUFP.value,
+    pdr: effectivePdr.value,
+    hm: s.hm,
+    rate: effectiveRate.value,
+    factors: {
+      cf: fCf.value ?? undefined,
+      reuse: fReuse.value ?? undefined,
+      appType: fAppType.value ?? undefined,
+      platform: fPlatform.value ?? undefined,
+      team: fTeam.value ?? undefined,
+      integrityLevel: fIntegrity.value ?? undefined,
+      nfSum: nfEnabled.value ? nfChecked.value.reduce((s, c) => s + (c ? 1 : -1), 0) : undefined,
+      teamSize: fTeamSize.value ?? undefined,
+    },
+  })
+})
+
+const adjustedUFP = computed(() => engine.value?.s ?? totalUFP.value)
+const cost = computed(() => engine.value?.cost ?? 0)
+const months = computed(() => engine.value?.workMonths ?? null)
+
+// 切换标准时，生产率 / 城市 / 调整因子一并重置（不同标准的因子取值不同，不可沿用）
 watch(selectedStd, (s) => {
   if (!s) return
   pdr.value = s.pdr
   city.value = s.rateMode === 'city' ? s.suggestedCity || cities.value[0]?.city || '' : ''
+  resetFactors()
 })
 
 const loadProject = async () => {
@@ -204,7 +265,19 @@ const exportReport = async () => {
   try {
     await api('/api/projects/' + projectId + '/calculate', {
       method: 'POST',
-      body: { standardId: stdId.value, city: city.value, pdr: effectivePdr.value, vaf: vaf.value }
+      body: {
+        standardId: stdId.value,
+        city: city.value,
+        pdr: effectivePdr.value,
+        cf: fCf.value ?? undefined,
+        reuse: fReuse.value ?? undefined,
+        appType: fAppType.value ?? undefined,
+        platform: fPlatform.value ?? undefined,
+        team: fTeam.value ?? undefined,
+        integrityLevel: fIntegrity.value ?? undefined,
+        nfSum: nfEnabled.value ? nfChecked.value.reduce((a, c) => a + (c ? 1 : -1), 0) : undefined,
+        teamSize: fTeamSize.value ?? undefined,
+      }
     })
   } catch {
     /* 忽略保存失败 */
@@ -217,7 +290,6 @@ const exportReport = async () => {
   lines.push('计价标准：' + s.name + '（' + s.code + '）')
   lines.push('发布机构：' + s.org)
   if (city.value) lines.push('取费城市：' + city.value)
-  lines.push('调整因子 VAF：' + vaf.value)
   lines.push('')
   lines.push('功能点明细：')
   lines.push('序号\t名称\t类型\t复杂度\tUFP')
@@ -226,13 +298,20 @@ const exportReport = async () => {
   })
   lines.push('')
   lines.push('未调整功能点合计(UFP)：' + totalUFP.value)
-  lines.push('调整后功能点：' + adjustedUFP.value)
   lines.push('基准生产率(人时/功能点)：' + effectivePdr.value)
   lines.push('生产率(功能点/人月)：' + productivity.value)
   lines.push('人月折算系数(人时/人月)：' + s.hm)
   lines.push('人月费率(元/人月)：' + effectiveRate.value)
   lines.push('功能点单价(元/功能点)：' + fpPrice.value)
-  lines.push('工期(人月)：' + (months.value ?? '-'))
+  lines.push('')
+  lines.push('测算过程：')
+  if (engine.value) {
+    for (const st of engine.value.steps) {
+      lines.push(`  ${st.label}\t${st.value}\t${st.unit}\t${st.formula}`)
+    }
+    if (engine.value.durationMonths != null) lines.push('工期(月)：' + engine.value.durationMonths)
+  }
+  lines.push('')
   lines.push('测算造价(元)：' + cost.value)
   lines.push('折合(万元)：' + (cost.value / 10000).toFixed(2))
   if (s.filled.length) {
@@ -404,23 +483,131 @@ onMounted(async () => {
                 </option>
               </select>
 
-              <label class="mb-2 mt-4 block text-sm font-medium text-gray-700">调整因子 VAF：{{ vaf.toFixed(2) }}</label>
-              <input v-model.number="vaf" type="range" min="0.5" max="1.5" step="0.01" class="w-full" />
+              <!-- 调整因子：均可留空，留空即取中性值 1，不参与调整 -->
+              <div class="mt-4 rounded-lg border border-gray-100 bg-gray-50 p-3">
+                <div class="mb-2 flex items-center justify-between">
+                  <span class="text-sm font-medium text-gray-700">调整因子</span>
+                  <button class="text-xs text-primary hover:underline" @click="resetFactors">重置</button>
+                </div>
+
+                <div v-if="numOpts(selectedStd?.factors?.scaleChange).length" class="mb-2">
+                  <label class="mb-1 block text-xs text-gray-500">规模变更因子 CF</label>
+                  <select v-model="fCf" class="w-full rounded border border-gray-200 px-2 py-1.5 text-xs">
+                    <option :value="null">（不调整）</option>
+                    <option v-for="o in numOpts(selectedStd.factors.scaleChange)" :key="o.label" :value="Number(o.factor)">
+                      {{ o.label }} — {{ o.factor }}
+                    </option>
+                  </select>
+                </div>
+
+                <div v-if="numOpts(selectedStd?.factors?.reuse).length" class="mb-2">
+                  <label class="mb-1 block text-xs text-gray-500">复用系数</label>
+                  <select v-model="fReuse" class="w-full rounded border border-gray-200 px-2 py-1.5 text-xs">
+                    <option :value="null">（不调整）</option>
+                    <option v-for="o in numOpts(selectedStd.factors.reuse)" :key="o.label" :value="Number(o.factor)">
+                      {{ o.label }} — {{ o.factor }}
+                    </option>
+                  </select>
+                </div>
+
+                <div v-if="numOpts(selectedStd?.factors?.applicationType).length" class="mb-2">
+                  <label class="mb-1 block text-xs text-gray-500">应用类型（SWF）</label>
+                  <select v-model="fAppType" class="w-full rounded border border-gray-200 px-2 py-1.5 text-xs">
+                    <option :value="null">（不调整）</option>
+                    <option v-for="o in numOpts(selectedStd.factors.applicationType)" :key="o.label" :value="Number(o.factor)">
+                      {{ o.label }} — {{ o.factor }}
+                    </option>
+                  </select>
+                </div>
+
+                <div v-if="numOpts(selectedStd?.factors?.platform).length" class="mb-2">
+                  <label class="mb-1 block text-xs text-gray-500">开发平台（RDF）</label>
+                  <select v-model="fPlatform" class="w-full rounded border border-gray-200 px-2 py-1.5 text-xs">
+                    <option :value="null">（不调整）</option>
+                    <option v-for="o in numOpts(selectedStd.factors.platform)" :key="o.label" :value="Number(o.factor)">
+                      {{ o.label }} — {{ o.factor }}
+                    </option>
+                  </select>
+                </div>
+
+                <div v-if="numOpts(selectedStd?.factors?.team).length" class="mb-2">
+                  <label class="mb-1 block text-xs text-gray-500">开发团队背景（RDF）</label>
+                  <select v-model="fTeam" class="w-full rounded border border-gray-200 px-2 py-1.5 text-xs">
+                    <option :value="null">（不调整）</option>
+                    <option v-for="o in numOpts(selectedStd.factors.team)" :key="o.label" :value="Number(o.factor)">
+                      {{ o.label }} — {{ o.factor }}
+                    </option>
+                  </select>
+                </div>
+
+                <div class="mb-2">
+                  <label class="mb-1 block text-xs text-gray-500">软件完整性级别（SWF）</label>
+                  <select v-model="fIntegrity" class="w-full rounded border border-gray-200 px-2 py-1.5 text-xs">
+                    <option :value="null">（不调整）</option>
+                    <option v-for="o in INTEGRITY_OPTS" :key="o.label" :value="o.factor">
+                      {{ o.label }} — {{ o.factor }}
+                    </option>
+                  </select>
+                </div>
+
+                <!-- 非功能性特征：启用后按 (Σ±1)×0.025+1 计算 -->
+                <div class="mb-2">
+                  <label class="mb-1 flex items-center gap-2 text-xs text-gray-500">
+                    <input v-model="nfEnabled" type="checkbox" class="h-3 w-3 accent-blue-600" />
+                    非功能性特征（SWF）· 当前因子 {{ nfFactor }}
+                  </label>
+                  <div v-if="nfEnabled" class="mt-1 flex flex-wrap gap-3 pl-1">
+                    <label v-for="(it, i) in NF_ITEMS" :key="it" class="flex items-center gap-1 text-xs text-gray-600">
+                      <input v-model="nfChecked[i]" type="checkbox" class="h-3 w-3 accent-blue-600" />
+                      {{ it }}
+                    </label>
+                  </div>
+                  <p v-if="nfEnabled" class="mt-1 pl-1 text-[11px] text-gray-400">
+                    勾选=有明示要求(+1)，未勾选=无明示(-1)；因子 = (合计)×0.025 + 1
+                  </p>
+                </div>
+
+                <div>
+                  <label class="mb-1 block text-xs text-gray-500">投入人数（仅用于估算工期）</label>
+                  <input v-model.number="fTeamSize" type="number" min="1" placeholder="留空则不估工期" class="w-full rounded border border-gray-200 px-2 py-1.5 text-xs" />
+                </div>
+              </div>
             </div>
 
             <div class="rounded-xl bg-gradient-to-br from-primary/5 to-indigo-50 p-5">
-              <div class="flex justify-between py-2 text-sm"><span class="text-gray-500">未调整功能点(UFP)</span><span class="font-semibold">{{ totalUFP }}</span></div>
-              <div class="flex justify-between border-t border-gray-100 py-2 text-sm"><span class="text-gray-500">调整后功能点</span><span class="font-semibold">{{ adjustedUFP }}</span></div>
-              <div class="flex justify-between border-t border-gray-100 py-2 text-sm"><span class="text-gray-500">基准生产率</span><span class="font-semibold">{{ effectivePdr }} 人时/FP</span></div>
-              <div class="flex justify-between border-t border-gray-100 py-2 text-sm"><span class="text-gray-500">生产率</span><span class="font-semibold">{{ productivity }} FP/人月</span></div>
-              <div class="flex justify-between border-t border-gray-100 py-2 text-sm"><span class="text-gray-500">人月费率</span><span class="font-semibold">{{ effectiveRate?.toLocaleString() || '-' }} 元/人月</span></div>
-              <div class="flex justify-between border-t border-gray-100 py-2 text-sm"><span class="text-gray-500">功能点单价</span><span class="font-semibold">{{ fpPrice ?? '-' }} 元/FP</span></div>
-              <div class="flex justify-between border-t border-gray-100 py-2 text-sm"><span class="text-gray-500">工期</span><span class="font-semibold">{{ months ?? '-' }} 人月</span></div>
+              <div class="flex justify-between py-1.5 text-sm"><span class="text-gray-500">基准生产率</span><span class="font-semibold">{{ effectivePdr }} 人时/FP</span></div>
+              <div class="flex justify-between border-t border-gray-100 py-1.5 text-sm">
+                <span class="text-gray-500">人月折算 / 费率</span>
+                <span class="font-semibold">{{ selectedStd?.hm ?? '-' }} 人时 · {{ effectiveRate?.toLocaleString() || '-' }} 元/人月</span>
+              </div>
+              <div class="flex justify-between border-t border-gray-100 py-1.5 text-sm"><span class="text-gray-500">功能点单价</span><span class="font-semibold">{{ fpPrice ?? '-' }} 元/FP</span></div>
+
+              <!-- 完整测算链 -->
+              <div v-if="engine" class="mt-3 border-t border-gray-200 pt-3">
+                <div class="mb-1.5 text-xs font-semibold text-gray-600">测算过程</div>
+                <div v-for="st in engine.steps" :key="st.key" class="py-1">
+                  <div class="flex items-baseline justify-between gap-2 text-xs">
+                    <span class="text-gray-500">{{ st.label }}</span>
+                    <span class="whitespace-nowrap">
+                      <span class="font-semibold text-gray-800">{{ st.value.toLocaleString() }}</span>
+                      <span v-if="st.unit" class="ml-1 text-gray-400">{{ st.unit }}</span>
+                    </span>
+                  </div>
+                  <div class="text-[11px] text-gray-400">{{ st.formula }}</div>
+                </div>
+              </div>
+              <p v-else class="mt-3 border-t border-gray-200 pt-3 text-xs text-amber-600">
+                当前标准参数不足，无法测算（请换用其它标准或选择城市）
+              </p>
+
               <div class="mt-3 flex items-baseline justify-between border-t border-gray-200 pt-3">
                 <span class="text-gray-700">测算造价</span>
                 <span class="text-2xl font-bold text-primary">¥{{ cost.toLocaleString() }}</span>
               </div>
-              <p class="mt-1 text-right text-xs text-gray-400">约 {{ (cost / 10000).toFixed(2) }} 万元</p>
+              <p class="mt-1 text-right text-xs text-gray-400">
+                约 {{ (cost / 10000).toFixed(2) }} 万元
+                <template v-if="engine?.durationMonths"> · 工期 {{ engine.durationMonths }} 月</template>
+              </p>
               <button class="btn-primary mt-4 w-full py-2.5 text-sm" @click="exportReport">导出报告</button>
             </div>
           </div>
@@ -432,7 +619,9 @@ onMounted(async () => {
             </div>
           </div>
           <p class="mt-3 text-xs text-gray-400">
-            测算口径：生产率 = 人月折算系数 ÷ 基准生产率；功能点单价 = 人月费率 × 基准生产率 ÷ 人月折算系数。参数均取自已落库的标准原文。
+            测算口径：UFP → 复用调整 US → 规模变更调整 S → 未调整工作量 UE = S × 生产率 →
+            调整后工作量 AE = UE × SWF(应用类型×非功能×完整性) × RDF(平台×团队) →
+            工作量 = AE ÷ 人月折算系数 → 费用 = 工作量 × 人月费率。参数均取自已落库的标准原文。
           </p>
         </div>
       </template>
