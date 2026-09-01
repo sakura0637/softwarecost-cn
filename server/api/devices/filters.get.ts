@@ -9,6 +9,7 @@ import { getQuery } from 'h3'
 //   subcategories → devices 表的子分类去重，可按站点/分类收敛
 // 【2026-09-01 多选增强】station 入参支持多值（重复参数或逗号分隔），
 //   返回所选站点下的子站「并集」（按所选站点并集）；未传站点时返回全部 level=2 子站。
+// 【2026-09-01 分组勾选】新增 stationTree / categoryTree，用于导出弹窗的二级分组勾选。
 
 function toArray(v: any): string[] {
   if (v == null) return []
@@ -69,6 +70,48 @@ export default defineEventHandler(async (event) => {
     }
     sql += ' WHERE ' + conds.join(' AND ') + ' ORDER BY d.subcategory'
     resp.subcategories = (await db.prepare(sql).all(...params) as any[]).map((r) => r.subcategory)
+  }
+
+  // 站点-子站分组树：按管理处分组列出子站，用于导出弹窗二级勾选
+  {
+    const rows = (await db.prepare(`
+      SELECT p.name AS station, s.name AS subsite
+      FROM stations s
+      JOIN stations p ON p.id = s.parent_id
+      WHERE s.level = 2 AND NOT s.is_summary
+      ORDER BY p.name, s.name
+    `).all() as any[])
+    const map = new Map<string, string[]>()
+    for (const r of rows) {
+      const arr = map.get(r.station) || []
+      arr.push(r.subsite)
+      map.set(r.station, arr)
+    }
+    resp.stationTree = stationsList.map((station) => ({
+      station,
+      subsites: map.get(station) || [],
+    }))
+  }
+
+  // 分类-子分类分组树：按分类分组列出子分类
+  {
+    const rows = (await db.prepare(`
+      SELECT d.category, d.subcategory
+      FROM devices d
+      WHERE d.category IS NOT NULL AND d.category <> ''
+        AND d.subcategory IS NOT NULL AND d.subcategory <> ''
+      ORDER BY d.category, d.subcategory
+    `).all() as any[])
+    const map = new Map<string, string[]>()
+    for (const r of rows) {
+      const arr = map.get(r.category) || []
+      if (!arr.includes(r.subcategory)) arr.push(r.subcategory)
+      map.set(r.category, arr)
+    }
+    resp.categoryTree = categoriesList.map((category) => ({
+      category,
+      subcategories: map.get(category) || [],
+    }))
   }
 
   return resp
