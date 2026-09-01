@@ -6,13 +6,32 @@ import * as XLSX from 'xlsx'
 // 【2026-09-01】数据源由宽表 device_prices 改为范式化视图 v_device_prices：
 //   - 合价由视图现算（qty × unit_price），不读取存储合价，与浏览页口径完全一致
 //   - 默认排除 is_summary（各管理处「全站设备汇总」合计行），避免金额重复；传 includeSummary=1 可含汇总
+// 【2026-09-01 多选增强】station / subsite / category / subcategory 均支持多选：
+//   入参可为重复参数（station=A&station=B）或逗号分隔（station=A,B）；空数组则忽略该条件。
+
+function toArray(v: any): string[] {
+  if (v == null) return []
+  if (Array.isArray(v)) return v.map(String).filter((s) => s !== '')
+  return String(v)
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s !== '')
+}
+
+function inClause(col: string, vals: string[], params: any[]): string {
+  if (vals.length === 0) return ''
+  const ph = vals.map(() => '?')
+  for (const v of vals) params.push(v)
+  return `${col} IN (${ph.join(',')})`
+}
+
 export default defineEventHandler(async (event) => {
   const q = getQuery(event)
   const keyword = String(q.q || '').trim()
-  const station = String(q.station || '').trim()
-  const subsite = String(q.subsite || '').trim()
-  const category = String(q.category || '').trim()
-  const subcategory = String(q.subcategory || '').trim()
+  const stations = toArray(q.station)
+  const subsites = toArray(q.subsite)
+  const categories = toArray(q.category)
+  const subcategories = toArray(q.subcategory)
   const sort = String(q.sort || 'id')
   const order = String(q.order || 'asc').toLowerCase() === 'desc' ? 'DESC' : 'ASC'
   const includeSummary = String(q.includeSummary || '') === '1'
@@ -24,22 +43,14 @@ export default defineEventHandler(async (event) => {
     where.push('(name LIKE ? OR brand_model LIKE ? OR remark LIKE ?)')
     params.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`)
   }
-  if (station) {
-    where.push('station = ?')
-    params.push(station)
-  }
-  if (subsite) {
-    where.push('subsite = ?')
-    params.push(subsite)
-  }
-  if (category) {
-    where.push('category = ?')
-    params.push(category)
-  }
-  if (subcategory) {
-    where.push('subcategory = ?')
-    params.push(subcategory)
-  }
+  const stIn = inClause('station', stations, params)
+  if (stIn) where.push(stIn)
+  const ssIn = inClause('subsite', subsites, params)
+  if (ssIn) where.push(ssIn)
+  const catIn = inClause('category', categories, params)
+  if (catIn) where.push(catIn)
+  const subIn = inClause('subcategory', subcategories, params)
+  if (subIn) where.push(subIn)
   const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : ''
 
   const allowed: Record<string, string> = {
