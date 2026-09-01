@@ -1,6 +1,11 @@
 import db from '../utils/db'
 import { getQuery } from 'h3'
 
+// 设备价格库浏览列表。
+// 【2026-09-01】数据源由宽表 device_prices 改为范式化视图 v_device_prices：
+//   - 单价取自 devices（全局唯一价格源），合价由视图现算（qty × unit_price），不再读取存储的合价
+//   - 默认排除 is_summary（各管理处「全站设备汇总」这类合计行），避免金额重复计算
+//   - 需要看汇总行时传 includeSummary=1
 export default defineEventHandler(async (event) => {
   const q = getQuery(event)
   const keyword = String(q.q || '').trim()
@@ -13,9 +18,11 @@ export default defineEventHandler(async (event) => {
   const page = Math.max(1, parseInt(String(q.page || '1')) || 1)
   const pageSize = Math.min(200, Math.max(1, parseInt(String(q.pageSize || '50')) || 50))
   const offset = (page - 1) * pageSize
+  const includeSummary = String(q.includeSummary || '') === '1'
 
   const where: string[] = []
   const params: any[] = []
+  if (!includeSummary) where.push('NOT is_summary')
   if (keyword) {
     where.push('(name LIKE ? OR brand_model LIKE ? OR remark LIKE ?)')
     params.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`)
@@ -47,11 +54,14 @@ export default defineEventHandler(async (event) => {
   }
   const sortCol = allowed[sort] || 'id'
 
-  const total = Number((await db.prepare(`SELECT COUNT(*) AS c FROM device_prices ${whereSql}`).get(...params) as { c: any }).c)
+  const total = Number(
+    (await db.prepare(`SELECT COUNT(*) AS c FROM v_device_prices ${whereSql}`).get(...params) as { c: any }).c
+  )
   const items = await db
     .prepare(
-      `       SELECT id, station, subsite, category, subcategory, name, unit, brand_model, qty, unit_price, total_price, remark
-       FROM device_prices ${whereSql} ORDER BY ${sortCol} ${order} LIMIT ? OFFSET ?`
+      `SELECT sd_id AS id, station, subsite, category, subcategory, name, unit, brand_model,
+              qty, unit_price, total_price, remark, device_id, subsite_id
+       FROM v_device_prices ${whereSql} ORDER BY ${sortCol} ${order} LIMIT ? OFFSET ?`
     )
     .all(...params, pageSize, offset)
 

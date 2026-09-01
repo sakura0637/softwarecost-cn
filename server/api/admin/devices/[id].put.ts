@@ -2,6 +2,8 @@ import db from '../../../utils/db'
 import { readBody, createError } from 'h3'
 import { requirePerm } from '../../../utils/auth'
 
+// 编辑设备主数据。改单价后合价自动随 数量×单价 变化（不落地）；
+// 返回 affected = 被多少条站点对照引用（前端提示“改价将影响 N 个子站合价”）。
 export default defineEventHandler(async (event) => {
   await requirePerm(event, 'devices:edit')
 
@@ -9,29 +11,26 @@ export default defineEventHandler(async (event) => {
   if (!id || isNaN(id)) throw createError({ statusCode: 400, statusMessage: '无效 ID' })
 
   const body = await readBody(event)
-  const station = String(body.station || '').trim()
-  const subsite = body.subsite ? String(body.subsite).trim() : null
-  const category = body.category ? String(body.category).trim() : null
-  const subcategory = body.subcategory ? String(body.subcategory).trim() : null
   const name = String(body.name || '').trim()
-  const unit = body.unit ? String(body.unit).trim() : null
-  const brand_model = body.brand_model ? String(body.brand_model).trim() : null
-  const qty = body.qty === '' || body.qty === null || body.qty === undefined ? null : Number(body.qty)
-  const unit_price = body.unit_price === '' || body.unit_price === null || body.unit_price === undefined ? null : Number(body.unit_price)
-  const total_price = body.total_price === '' || body.total_price === null || body.total_price === undefined ? null : Number(body.total_price)
-  const remark = body.remark ? String(body.remark).trim() : null
+  if (!name) throw createError({ statusCode: 400, statusMessage: '设备名称为必填' })
 
-  if (!station) throw createError({ statusCode: 400, statusMessage: '站点必填' })
-  if (!name) throw createError({ statusCode: 400, statusMessage: '设备名称必填' })
-
-  const existing = await db.prepare('SELECT id FROM device_prices WHERE id = ?').get(id)
+  const existing = await db.prepare('SELECT id FROM devices WHERE id = ?').get(id)
   if (!existing) throw createError({ statusCode: 404, statusMessage: '设备不存在' })
 
   await db
-    .prepare(
-      'UPDATE device_prices SET station = ?, subsite = ?, category = ?, subcategory = ?, name = ?, unit = ?, brand_model = ?, qty = ?, unit_price = ?, total_price = ?, remark = ? WHERE id = ?'
+    .prepare('UPDATE devices SET category = ?, subcategory = ?, name = ?, brand_model = ?, unit = ?, unit_price = ?, remark = ?, source = ? WHERE id = ?')
+    .run(
+      String(body.category || '').trim() || null,
+      String(body.subcategory || '').trim() || null,
+      name,
+      String(body.brand_model || '').trim() || null,
+      String(body.unit || '').trim() || null,
+      body.unit_price === '' || body.unit_price === null || body.unit_price === undefined ? null : Number(body.unit_price),
+      String(body.remark || '').trim() || null,
+      'manual',
+      id
     )
-    .run(station, subsite, category, subcategory, name, unit, brand_model, qty, unit_price, total_price, remark, id)
 
-  return { ok: true, id }
+  const affected = Number((await db.prepare('SELECT COUNT(*) AS c FROM station_devices WHERE device_id = ?').get(id) as { c: any }).c)
+  return { ok: true, affected }
 })
