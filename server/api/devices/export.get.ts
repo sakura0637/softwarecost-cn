@@ -2,7 +2,10 @@ import db from '../../utils/db'
 import { getQuery, setHeader } from 'h3'
 import * as XLSX from 'xlsx'
 
-// 按当前筛选条件导出 Excel（不分页，返回全量）
+// 设备价格库导出（按当前筛选条件导出全量，不分页）。
+// 【2026-09-01】数据源由宽表 device_prices 改为范式化视图 v_device_prices：
+//   - 合价由视图现算（qty × unit_price），不读取存储合价，与浏览页口径完全一致
+//   - 默认排除 is_summary（各管理处「全站设备汇总」合计行），避免金额重复；传 includeSummary=1 可含汇总
 export default defineEventHandler(async (event) => {
   const q = getQuery(event)
   const keyword = String(q.q || '').trim()
@@ -12,9 +15,11 @@ export default defineEventHandler(async (event) => {
   const subcategory = String(q.subcategory || '').trim()
   const sort = String(q.sort || 'id')
   const order = String(q.order || 'asc').toLowerCase() === 'desc' ? 'DESC' : 'ASC'
+  const includeSummary = String(q.includeSummary || '') === '1'
 
   const where: string[] = []
   const params: any[] = []
+  if (!includeSummary) where.push('NOT is_summary')
   if (keyword) {
     where.push('(name LIKE ? OR brand_model LIKE ? OR remark LIKE ?)')
     params.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`)
@@ -48,8 +53,8 @@ export default defineEventHandler(async (event) => {
 
   const rows = await db
     .prepare(
-      `SELECT id, station, subsite, category, subcategory, name, unit, brand_model, qty, unit_price, total_price, remark
-       FROM device_prices ${whereSql} ORDER BY ${sortCol} ${order}`
+      `SELECT sd_id AS id, station, subsite, category, subcategory, name, unit, brand_model, qty, unit_price, total_price, remark
+       FROM v_device_prices ${whereSql} ORDER BY ${sortCol} ${order}`
     )
     .all(...params) as any[]
 
