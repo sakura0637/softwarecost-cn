@@ -10,7 +10,9 @@ const order = ref<'asc' | 'desc'>('asc')
 const page = ref(1)
 const pageSize = 50
 
-const filters = ref<{ stations: string[]; categories: string[] }>({ stations: [], categories: [] })
+interface StationGroup { station: string; subsites: string[] }
+interface CategoryGroup { category: string; subcategories: string[] }
+const filters = ref<{ stations: string[]; categories: string[]; stationTree: StationGroup[]; categoryTree: CategoryGroup[] }>({ stations: [], categories: [], stationTree: [], categoryTree: [] })
 const subsiteOptions = ref<string[]>([])      // 当前站点下的子站（含「全站设备汇总」）
 const subcategoryOptions = ref<string[]>([])   // 当前站点/分类下的子分类
 // 总调中心无真实子站（subsite 全是「全站设备汇总」），仅当存在其它子站才显示子站下拉
@@ -112,67 +114,49 @@ function resetFilters() {
   load()
 }
 
-// ============ 导出弹窗（2026-09-01 多选增强） ============
+// ============ 导出弹窗（2026-09-01 多选增强 + 二级分组勾选） ============
 const showExport = ref(false)
 const exportMode = ref<'current' | 'custom'>('current')
 const exKeyword = ref('')
-const exStations = ref<string[]>([])
 const exSubsites = ref<string[]>([])
-const exCategories = ref<string[]>([])
 const exSubcategories = ref<string[]>([])
-const exSubsiteOptions = ref<string[]>([])
-const exSubcategoryOptions = ref<string[]>([])
-const exStationOpts = computed(() => filters.value.stations)
-const exCategoryOpts = computed(() => filters.value.categories)
-
-// 自定义筛选时，按所选站点/分类集拉取子站并集与子分类
-async function loadExportSubOptions() {
-  const params = new URLSearchParams()
-  for (const s of exStations.value) params.append('station', s)
-  for (const c of exCategories.value) params.append('category', c)
-  try {
-    const r: any = await $fetch(`/api/devices/filters?${params.toString()}`)
-    exSubsiteOptions.value = r.subsites || []
-    exSubcategoryOptions.value = r.subcategories || []
-    // 清理已不在可选项内的勾选（站点变化后子站可能失效）
-    exSubsites.value = exSubsites.value.filter((s) => exSubsiteOptions.value.includes(s))
-    exSubcategories.value = exSubcategories.value.filter((c) => exSubcategoryOptions.value.includes(c))
-  } catch {
-    exSubsiteOptions.value = []
-    exSubcategoryOptions.value = []
-  }
-}
 
 function openExport() {
   exportMode.value = 'current'
-  // 预填自定义选项为当前页筛选，方便微调
   exKeyword.value = keyword.value
-  exStations.value = station.value ? [station.value] : []
-  exSubsites.value = subsite.value ? [subsite.value] : []
-  exCategories.value = category.value ? [category.value] : []
-  exSubcategories.value = subcategory.value ? [subcategory.value] : []
+  // 预填自定义选项为当前页筛选，方便微调
+  exSubsites.value = []
+  exSubcategories.value = []
+  if (station.value) {
+    const g = filters.value.stationTree.find((x) => x.station === station.value)
+    exSubsites.value = subsite.value ? [subsite.value] : (g?.subsites || [])
+  }
+  if (category.value) {
+    const g = filters.value.categoryTree.find((x) => x.category === category.value)
+    exSubcategories.value = subcategory.value ? [subcategory.value] : (g?.subcategories || [])
+  }
   showExport.value = true
-  loadExportSubOptions()
 }
 
-watch([exStations, exCategories], () => {
-  if (showExport.value && exportMode.value === 'custom') loadExportSubOptions()
-})
-
-function onExStationToggle(v: string) {
-  const i = exStations.value.indexOf(v)
-  if (i >= 0) exStations.value.splice(i, 1)
-  else exStations.value.push(v)
+function toggleGroupAll(selected: string[], items: string[], checked: boolean) {
+  if (checked) {
+    for (const it of items) if (!selected.includes(it)) selected.push(it)
+  } else {
+    for (const it of items) {
+      const i = selected.indexOf(it)
+      if (i >= 0) selected.splice(i, 1)
+    }
+  }
 }
+
+function isGroupAllSelected(selected: string[], items: string[]): boolean {
+  return items.length > 0 && items.every((it) => selected.includes(it))
+}
+
 function onExSubsiteToggle(v: string) {
   const i = exSubsites.value.indexOf(v)
   if (i >= 0) exSubsites.value.splice(i, 1)
   else exSubsites.value.push(v)
-}
-function onExCategoryToggle(v: string) {
-  const i = exCategories.value.indexOf(v)
-  if (i >= 0) exCategories.value.splice(i, 1)
-  else exCategories.value.push(v)
 }
 function onExSubcategoryToggle(v: string) {
   const i = exSubcategories.value.indexOf(v)
@@ -190,9 +174,7 @@ function buildExportUrl(): string {
     if (subcategory.value) params.set('subcategory', subcategory.value)
   } else {
     if (exKeyword.value.trim()) params.set('q', exKeyword.value.trim())
-    for (const s of exStations.value) params.append('station', s)
     for (const s of exSubsites.value) params.append('subsite', s)
-    for (const c of exCategories.value) params.append('category', c)
     for (const c of exSubcategories.value) params.append('subcategory', c)
   }
   params.set('sort', sort.value)
@@ -476,7 +458,7 @@ function gotoPage(event: Event) {
           </div>
         </div>
 
-        <!-- 模式二：自定义多选 -->
+        <!-- 模式二：自定义多选（二级分组勾选） -->
         <div v-else class="mt-4 space-y-4">
           <div>
             <label class="mb-1 block text-xs text-gray-400">关键词</label>
@@ -487,38 +469,60 @@ function gotoPage(event: Event) {
               class="w-full rounded-lg border border-gray-200 px-4 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
             />
           </div>
+
+          <!-- 站点-子站二级分组 -->
           <div>
-            <label class="mb-1 block text-xs text-gray-400">站点（可多选）</label>
-            <div class="flex max-h-32 flex-wrap gap-x-4 gap-y-1 overflow-auto">
-              <label v-for="s in exStationOpts" :key="s" class="flex items-center gap-1 text-sm">
-                <input type="checkbox" :checked="exStations.includes(s)" @change="onExStationToggle(s)" /> {{ s }}
-              </label>
+            <label class="mb-2 block text-xs text-gray-400">站点 / 子站（可多选）</label>
+            <div class="max-h-56 overflow-auto rounded-lg border border-gray-200 p-3">
+              <div v-for="g in filters.stationTree" :key="g.station" class="mb-3">
+                <label class="flex items-center gap-2 text-sm font-medium text-gray-700">
+                  <input
+                    type="checkbox"
+                    :checked="isGroupAllSelected(exSubsites, g.subsites)"
+                    @change="toggleGroupAll(exSubsites, g.subsites, ($event.target as HTMLInputElement).checked)"
+                  />
+                  {{ g.station }}
+                </label>
+                <div class="ml-5 mt-1 flex flex-wrap gap-x-4 gap-y-1">
+                  <label v-for="s in g.subsites" :key="s" class="flex items-center gap-1 text-sm text-gray-600">
+                    <input
+                      type="checkbox"
+                      :checked="exSubsites.includes(s)"
+                      @change="onExSubsiteToggle(s)"
+                    />
+                    {{ s }}
+                  </label>
+                  <span v-if="!g.subsites.length" class="text-xs text-gray-400">该管理处无明细子站</span>
+                </div>
+              </div>
             </div>
           </div>
+
+          <!-- 分类-子分类二级分组 -->
           <div>
-            <label class="mb-1 block text-xs text-gray-400">子站（可多选，按所选站点并集）</label>
-            <div class="flex max-h-32 flex-wrap gap-x-4 gap-y-1 overflow-auto">
-              <label v-for="s in exSubsiteOptions" :key="s" class="flex items-center gap-1 text-sm">
-                <input type="checkbox" :checked="exSubsites.includes(s)" @change="onExSubsiteToggle(s)" /> {{ s }}
-              </label>
-              <span v-if="!exSubsiteOptions.length" class="text-xs text-gray-400">请先选择站点</span>
-            </div>
-          </div>
-          <div>
-            <label class="mb-1 block text-xs text-gray-400">分类（可多选）</label>
-            <div class="flex max-h-32 flex-wrap gap-x-4 gap-y-1 overflow-auto">
-              <label v-for="c in exCategoryOpts" :key="c" class="flex items-center gap-1 text-sm">
-                <input type="checkbox" :checked="exCategories.includes(c)" @change="onExCategoryToggle(c)" /> {{ c }}
-              </label>
-            </div>
-          </div>
-          <div>
-            <label class="mb-1 block text-xs text-gray-400">子分类（可多选）</label>
-            <div class="flex max-h-32 flex-wrap gap-x-4 gap-y-1 overflow-auto">
-              <label v-for="c in exSubcategoryOptions" :key="c" class="flex items-center gap-1 text-sm">
-                <input type="checkbox" :checked="exSubcategories.includes(c)" @change="onExSubcategoryToggle(c)" /> {{ c }}
-              </label>
-              <span v-if="!exSubcategoryOptions.length" class="text-xs text-gray-400">可不选（导出全部子分类）</span>
+            <label class="mb-2 block text-xs text-gray-400">分类 / 子分类（可多选）</label>
+            <div class="max-h-56 overflow-auto rounded-lg border border-gray-200 p-3">
+              <div v-for="g in filters.categoryTree" :key="g.category" class="mb-3">
+                <label class="flex items-center gap-2 text-sm font-medium text-gray-700">
+                  <input
+                    type="checkbox"
+                    :checked="isGroupAllSelected(exSubcategories, g.subcategories)"
+                    @change="toggleGroupAll(exSubcategories, g.subcategories, ($event.target as HTMLInputElement).checked)"
+                  />
+                  {{ g.category }}
+                </label>
+                <div class="ml-5 mt-1 flex flex-wrap gap-x-4 gap-y-1">
+                  <label v-for="c in g.subcategories" :key="c" class="flex items-center gap-1 text-sm text-gray-600">
+                    <input
+                      type="checkbox"
+                      :checked="exSubcategories.includes(c)"
+                      @change="onExSubcategoryToggle(c)"
+                    />
+                    {{ c }}
+                  </label>
+                  <span v-if="!g.subcategories.length" class="text-xs text-gray-400">该分类下无子分类</span>
+                </div>
+              </div>
             </div>
           </div>
         </div>
