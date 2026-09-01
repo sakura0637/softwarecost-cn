@@ -1,7 +1,7 @@
-import db from '../../../utils/db'
+import db from '../../utils/db'
 import { readBody, createError } from 'h3'
-import { requirePerm } from '../../../utils/auth'
-import { logOperation } from '../../../utils/logOperation'
+import { requirePerm } from '../../utils/auth'
+import { logOperation } from '../../utils/logOperation'
 
 // 新增站点/子站。parent_id 为空=新建管理处(level=1)；指定 parent=新建子站(level=2)。
 export default defineEventHandler(async (event) => {

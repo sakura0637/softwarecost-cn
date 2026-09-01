@@ -1,7 +1,7 @@
-import db from '../../../utils/db'
+import db from '../../utils/db'
 import { readBody, createError } from 'h3'
-import { requirePerm } from '../../../utils/auth'
-import { logOperation } from '../../../utils/logOperation'
+import { requirePerm } from '../../utils/auth'
+import { logOperation } from '../../utils/logOperation'
 
 // 新增设备主数据（devices 表）。source='manual' 标记页面手填，不被种子导入覆盖。
 export default defineEventHandler(async (event) => {

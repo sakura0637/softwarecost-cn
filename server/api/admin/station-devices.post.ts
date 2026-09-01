@@ -1,7 +1,7 @@
-import db from '../../../utils/db'
+import db from '../../utils/db'
 import { readBody, createError } from 'h3'
-import { requirePerm } from '../../../utils/auth'
-import { logOperation } from '../../../utils/logOperation'
+import { requirePerm } from '../../utils/auth'
+import { logOperation } from '../../utils/logOperation'
 
 // 新增/更新站点-设备对照。subsite_id 与 device_id 必须来自已有基础表（后端二次校验）；
 // 同一子站同一设备唯一，重复提交覆盖数量（不累加）。
