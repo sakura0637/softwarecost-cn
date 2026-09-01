@@ -22,6 +22,13 @@ async function loadStations() {
 const rootStations = computed(() => stations.value.filter((s) => !s.parent_id))
 const childrenOf = (pid: number) => stations.value.filter((s) => s.parent_id === pid)
 const stationOptions = computed(() => stations.value.filter((s) => s.level === 1)) // 可作父级的管理处
+const collapsedStations = ref<Set<number>>(new Set())
+function toggleCollapse(id: number) {
+  const s = new Set(collapsedStations.value)
+  if (s.has(id)) s.delete(id)
+  else s.add(id)
+  collapsedStations.value = s
+}
 
 const showStationModal = ref(false)
 const stationEditingId = ref<number | null>(null)
@@ -58,6 +65,12 @@ const devCategory = ref('')
 const devSubcategory = ref('')
 const devPage = ref(1)
 const devLoading = ref(false)
+const categoryTree = ref<{ category: string; subcategories: string[] }[]>([])
+const devCatOptions = computed(() => categoryTree.value.map((g) => g.category))
+const devSubcatOptions = computed(() => {
+  if (!devCategory.value) return []
+  return categoryTree.value.find((g) => g.category === devCategory.value)?.subcategories || []
+})
 async function loadDevices() {
   devLoading.value = true
   try {
@@ -72,12 +85,21 @@ async function loadDevices() {
   finally { devLoading.value = false }
 }
 watch([devKeyword, devCategory, devSubcategory], () => { devPage.value = 1; loadDevices() })
+watch(devCategory, () => { devSubcategory.value = '' })
 
 const showDevModal = ref(false)
 const editingDevId = ref<number | null>(null)
 const devForm = reactive({ category: '', subcategory: '', name: '', brand_model: '', unit: '', unit_price: '', remark: '' })
 const devAffected = ref(0)
 const devDup = ref<any[]>([])
+const devFormSubcatOptions = computed(() => {
+  if (!devForm.category) return []
+  return categoryTree.value.find((g) => g.category === devForm.category)?.subcategories || []
+})
+watch(() => devForm.category, () => {
+  const opts = devFormSubcatOptions.value
+  if (devForm.subcategory && !opts.includes(devForm.subcategory)) devForm.subcategory = ''
+})
 function resetDevDup() { devDup.value = [] }
 async function checkDup() {
   const nm = devForm.name.trim()
@@ -121,11 +143,16 @@ async function deleteDevice(d: any) {
 
 // ── Tab3 站点-设备对照 ───────────────────────────────────────────
 const linkResult = ref<{ total: number; page: number; pageSize: number; items: any[] }>({ total: 0, page: 1, pageSize: 50, items: [] })
-const linkSubsite = ref<number | null>(null)
+const linkStation = ref<number | null>(null) // 列表筛选：所选管理处 id
+const linkSubsite = ref<number | null>(null) // 列表筛选：所选子站 id
 const linkKeyword = ref('')
 const linkPage = ref(1)
 const linkLoading = ref(false)
-const subsiteOptions = computed(() => stations.value.filter((s) => s.level === 2)) // 仅子站可选
+const linkStationOptions = computed(() => stations.value.filter((s) => s.level === 1))
+const linkSubsiteOptions = computed(() => {
+  if (!linkStation.value) return []
+  return stations.value.filter((s) => s.level === 2 && s.parent_id === linkStation.value)
+})
 async function loadLinks() {
   linkLoading.value = true
   try {
@@ -138,10 +165,17 @@ async function loadLinks() {
   finally { linkLoading.value = false }
 }
 watch([linkSubsite, linkKeyword], () => { linkPage.value = 1; loadLinks() })
+watch(linkStation, () => { linkSubsite.value = null; linkPage.value = 1; loadLinks() })
 
 const showLinkModal = ref(false)
 const editingLinkId = ref<number | null>(null)
 const linkForm = reactive({ subsite_id: null as number | null, device_id: null as number | null, device_name: '', qty: '', remark: '' })
+const linkFormStation = ref<number | null>(null) // 弹窗内选中的管理处
+const linkFormSubsiteOptions = computed(() => {
+  if (!linkFormStation.value) return []
+  return stations.value.filter((s) => s.level === 2 && s.parent_id === linkFormStation.value)
+})
+watch(linkFormStation, () => { linkForm.subsite_id = null })
 const deviceSearchText = ref('')
 const deviceResults = ref<any[]>([])
 async function searchDevices(q: string) {
@@ -153,15 +187,23 @@ async function searchDevices(q: string) {
 watch(deviceSearchText, (v) => { searchDevices(v) })
 function pickDevice(d: any) { linkForm.device_id = d.id; linkForm.device_name = d.name; deviceSearchText.value = d.name; deviceResults.value = [] }
 
+function subsiteStationId(subsiteId: number | null): number | null {
+  if (!subsiteId) return null
+  const sub = stations.value.find((s) => s.id === subsiteId)
+  return sub?.parent_id || null
+}
+
 function openLinkNew() {
   editingLinkId.value = null
   Object.assign(linkForm, { subsite_id: linkSubsite.value, device_id: null, device_name: '', qty: '', remark: '' })
+  linkFormStation.value = subsiteStationId(linkSubsite.value)
   deviceSearchText.value = ''; deviceResults.value = []
   showLinkModal.value = true
 }
 function openLinkEdit(l: any) {
   editingLinkId.value = l.id
   Object.assign(linkForm, { subsite_id: l.subsite_id, device_id: l.device_id, device_name: l.device_name, qty: l.qty ?? '', remark: l.remark || '' })
+  linkFormStation.value = subsiteStationId(l.subsite_id)
   deviceSearchText.value = l.device_name; deviceResults.value = []
   showLinkModal.value = true
 }
@@ -188,6 +230,10 @@ onMounted(async () => {
   await me()
   if (!can('devices:view')) { useRouter().push('/'); return }
   await loadStations()
+  try {
+    const r: any = await $fetch('/api/devices/filters')
+    categoryTree.value = r.categoryTree || []
+  } catch { categoryTree.value = [] }
   await loadDevices()
   await loadLinks()
 })
@@ -220,6 +266,13 @@ onMounted(async () => {
           <div class="space-y-2">
             <div v-for="s in rootStations" :key="s.id" class="rounded-lg border border-gray-100">
               <div class="flex items-center gap-2 px-3 py-2">
+                <button
+                  class="flex h-5 w-5 items-center justify-center rounded text-xs text-gray-400 hover:bg-gray-100"
+                  :title="collapsedStations.has(s.id) ? '展开' : '收起'"
+                  @click="toggleCollapse(s.id)"
+                >
+                  {{ collapsedStations.has(s.id) ? '▶' : '▼' }}
+                </button>
                 <span class="rounded bg-blue-50 px-2 py-0.5 text-xs text-blue-600">管理处</span>
                 <span class="font-medium text-gray-900">{{ s.name }}</span>
                 <span v-if="s.is_summary" class="rounded bg-amber-50 px-2 py-0.5 text-xs text-amber-600">汇总</span>
@@ -231,7 +284,7 @@ onMounted(async () => {
                   <button v-if="canDelete" class="text-xs text-red-500 hover:underline" @click="deleteStation(s)">删除</button>
                 </div>
               </div>
-              <div v-if="childrenOf(s.id).length" class="border-t border-gray-50 pl-6">
+              <div v-show="!collapsedStations.has(s.id)" v-if="childrenOf(s.id).length" class="border-t border-gray-50 pl-10">
                 <div v-for="c in childrenOf(s.id)" :key="c.id" class="flex items-center gap-2 border-b border-gray-50 px-3 py-2 last:border-0">
                   <span class="rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-500">子站</span>
                   <span class="text-gray-800">{{ c.name }}</span>
@@ -256,13 +309,19 @@ onMounted(async () => {
               <label class="mb-1 block text-xs text-gray-400">关键词</label>
               <input v-model="devKeyword" type="text" placeholder="搜索设备名称、品牌型号…" class="w-full rounded-lg border border-gray-200 px-4 py-2.5 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20" />
             </div>
-            <div class="w-40">
+            <div class="w-44">
               <label class="mb-1 block text-xs text-gray-400">分类</label>
-              <input v-model="devCategory" type="text" placeholder="如：工程监控" class="w-full rounded-lg border border-gray-200 px-4 py-2.5 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20" />
+              <select v-model="devCategory" class="w-full rounded-lg border border-gray-200 px-4 py-2.5 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20">
+                <option value="">全部分类</option>
+                <option v-for="c in devCatOptions" :key="c" :value="c">{{ c }}</option>
+              </select>
             </div>
-            <div class="w-40">
+            <div class="w-44">
               <label class="mb-1 block text-xs text-gray-400">子分类</label>
-              <input v-model="devSubcategory" type="text" placeholder="如：硬件设备" class="w-full rounded-lg border border-gray-200 px-4 py-2.5 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20" />
+              <select v-model="devSubcategory" :disabled="!devCategory" class="w-full rounded-lg border border-gray-200 px-4 py-2.5 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:bg-gray-50 disabled:text-gray-400">
+                <option value="">{{ devCategory ? '全部子分类' : '请先选择分类' }}</option>
+                <option v-for="c in devSubcatOptions" :key="c" :value="c">{{ c }}</option>
+              </select>
             </div>
             <div class="w-24">
               <button v-if="canCreate" class="w-full rounded-lg bg-primary px-3 py-2.5 text-sm text-white hover:bg-primary/90" @click="openDevNew">+ 新增</button>
@@ -313,11 +372,18 @@ onMounted(async () => {
         <!-- ===== Tab3 站点-设备对照 ===== -->
         <div v-if="activeTab==='links'">
           <div class="mb-4 flex flex-wrap items-end gap-3">
+            <div class="w-40">
+              <label class="mb-1 block text-xs text-gray-400">管理处</label>
+              <select v-model="linkStation" class="w-full rounded-lg border border-gray-200 px-4 py-2.5 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20">
+                <option :value="null">全部管理处</option>
+                <option v-for="s in linkStationOptions" :key="s.id" :value="s.id">{{ s.name }}</option>
+              </select>
+            </div>
             <div class="w-48">
               <label class="mb-1 block text-xs text-gray-400">子站</label>
-              <select v-model="linkSubsite" class="w-full rounded-lg border border-gray-200 px-4 py-2.5 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20">
-                <option :value="null">全部子站</option>
-                <option v-for="s in subsiteOptions" :key="s.id" :value="s.id">{{ s.parent_name || '' }} / {{ s.name }}</option>
+              <select v-model="linkSubsite" :disabled="!linkStation" class="w-full rounded-lg border border-gray-200 px-4 py-2.5 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:bg-gray-50 disabled:text-gray-400">
+                <option :value="null">{{ linkStation ? '全部子站' : '请先选择管理处' }}</option>
+                <option v-for="s in linkSubsiteOptions" :key="s.id" :value="s.id">{{ s.name }}</option>
               </select>
             </div>
             <div class="min-w-[200px] flex-1">
@@ -418,10 +484,16 @@ onMounted(async () => {
             <h3 class="mb-4 text-lg font-bold text-gray-900">{{ editingDevId ? '编辑设备' : '新增设备' }}</h3>
             <div class="grid grid-cols-2 gap-3">
               <label class="block text-xs text-gray-500">分类
-                <input v-model="devForm.category" class="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" placeholder="如：工程监控" />
+                <select v-model="devForm.category" class="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm">
+                  <option value="">请选择分类</option>
+                  <option v-for="c in devCatOptions" :key="c" :value="c">{{ c }}</option>
+                </select>
               </label>
               <label class="block text-xs text-gray-500">子分类
-                <input v-model="devForm.subcategory" class="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" placeholder="如：硬件设备" />
+                <select v-model="devForm.subcategory" :disabled="!devForm.category" class="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm disabled:bg-gray-50 disabled:text-gray-400">
+                  <option value="">{{ devForm.category ? '请选择子分类' : '请先选择分类' }}</option>
+                  <option v-for="c in devFormSubcatOptions" :key="c" :value="c">{{ c }}</option>
+                </select>
               </label>
               <label class="col-span-2 block text-xs text-gray-500">设备名称 <span class="text-red-500">*</span>
                 <input v-model="devForm.name" class="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" placeholder="设备名称" />
@@ -461,12 +533,20 @@ onMounted(async () => {
           <div class="w-full max-w-xl rounded-2xl bg-white p-6 shadow-xl">
             <h3 class="mb-4 text-lg font-bold text-gray-900">{{ editingLinkId ? '编辑对照' : '新增对照' }}</h3>
             <div class="grid grid-cols-1 gap-3">
-              <label class="block text-xs text-gray-500">子站 <span class="text-red-500">*</span>
-                <select v-model="linkForm.subsite_id" class="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm">
-                  <option :value="null">请选择子站</option>
-                  <option v-for="s in subsiteOptions" :key="s.id" :value="s.id">{{ s.parent_name || '' }} / {{ s.name }}</option>
-                </select>
-              </label>
+              <div class="grid grid-cols-2 gap-3">
+                <label class="block text-xs text-gray-500">管理处 <span class="text-red-500">*</span>
+                  <select v-model="linkFormStation" class="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm">
+                    <option :value="null">请选择管理处</option>
+                    <option v-for="s in linkStationOptions" :key="s.id" :value="s.id">{{ s.name }}</option>
+                  </select>
+                </label>
+                <label class="block text-xs text-gray-500">子站 <span class="text-red-500">*</span>
+                  <select v-model="linkForm.subsite_id" :disabled="!linkFormStation" class="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm disabled:bg-gray-50 disabled:text-gray-400">
+                    <option :value="null">{{ linkFormStation ? '请选择子站' : '请先选择管理处' }}</option>
+                    <option v-for="s in linkFormSubsiteOptions" :key="s.id" :value="s.id">{{ s.name }}</option>
+                  </select>
+                </label>
+              </div>
               <label class="block text-xs text-gray-500">设备 <span class="text-red-500">*</span>
                 <input v-model="deviceSearchText" type="text" placeholder="搜索设备名称…" class="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" />
                 <div v-if="deviceResults.length" class="mt-1 max-h-40 overflow-auto rounded-lg border border-gray-100">
