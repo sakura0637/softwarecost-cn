@@ -234,25 +234,6 @@ CREATE TABLE IF NOT EXISTS user_roles (
 CREATE INDEX IF NOT EXISTS idx_ur_user ON user_roles(user_id);
 CREATE INDEX IF NOT EXISTS idx_ur_role ON user_roles(role_id);
 
-CREATE TABLE IF NOT EXISTS device_prices (
-  id           SERIAL PRIMARY KEY,
-  station      VARCHAR(32)  NOT NULL,
-  subsite      VARCHAR(64),
-  category     VARCHAR(32),
-  subcategory  VARCHAR(64),
-  name         VARCHAR(255) NOT NULL,
-  unit         TEXT,
-  brand_model  VARCHAR(255),
-  qty          DOUBLE PRECISION,
-  unit_price   DOUBLE PRECISION,
-  total_price  DOUBLE PRECISION,
-  remark       TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_dp_station  ON device_prices(station);
-CREATE INDEX IF NOT EXISTS idx_dp_category ON device_prices(category);
-
--- 兼容旧库：unit 早期为 VARCHAR(16)，种子里装的是长描述，需加宽到 TEXT（已为 TEXT 时则此句无副作用）
-ALTER TABLE device_prices ALTER COLUMN unit TYPE TEXT;
 
 -- ── 设备价格库范式化三表（2026-09-01 重构）────────────────────────────
 -- 原 device_prices 是宽表，单价在每行重复（平均 5.3 次），改价需改多处 → 更新异常。
@@ -607,46 +588,6 @@ CREATE TABLE IF NOT EXISTS kv (
     console.log(`[seed] estimation_parameters 已灌 ${estimationParameters.length} 条`)
   }
 
-  // 5) 设备价格库种子（server/seed/device_prices_seed.json）
-  const DEVICE_SEED_VERSION = '6'
-  const SEED_DIR = (() => {
-    const candidates: string[] = []
-    const here = dirname(fileURLToPath(import.meta.url))
-    const byMeta = here.replace(/[\\/]server[\\/]utils$/, '')
-    if (byMeta && byMeta !== here) candidates.push(join(byMeta, 'server', 'seed'))
-    if (process.env.DB_DIR) candidates.push(join(process.env.DB_DIR, '..', 'server', 'seed'))
-    candidates.push(join(process.cwd(), 'server', 'seed'))
-    for (const d of candidates) if (existsSync(d)) return d
-    return candidates[candidates.length - 1]
-  })()
-  const SEED_FILE = join(SEED_DIR, 'device_prices_seed.json')
-  let seedRows: any[] = []
-  if (existsSync(SEED_FILE)) {
-    try {
-      seedRows = JSON.parse(readFileSync(SEED_FILE, 'utf-8'))
-    } catch {
-      seedRows = []
-    }
-  }
-  const dpCount = Number((await pool.query('SELECT COUNT(*)::int AS c FROM device_prices')).rows[0].c)
-  // 【2026-09-01 改造】旧逻辑：版本不符「或」行数不符 → DELETE 全表重灌。
-  // 后果：管理员在页面手填/改过的设备数据，一次重启就被清空（行数必然与种子不一致）。
-  // 现改为「首次初始化」：只有表为空时才灌种子；之后一律靠页面维护或管理员手动触发导入接口。
-  const needReseed = seedRows.length > 0 && dpCount === 0
-  if (needReseed) {
-    await pool.query('DELETE FROM device_prices') // 表为空时无副作用，保留仅作防御
-    for (const r of seedRows) {
-      await pool.query(
-        'INSERT INTO device_prices (station, subsite, category, subcategory, name, unit, brand_model, qty, unit_price, total_price, remark) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
-        [r.station, r.subsite, r.category, r.subcategory ?? null, r.name, r.unit, r.brand_model, r.qty, r.unit_price, r.total_price, r.remark]
-      )
-    }
-    await pool.query(
-      "INSERT INTO kv (k, v) VALUES ('device_seed_version', $1) ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v",
-      [DEVICE_SEED_VERSION]
-    )
-    console.log(`[seed] device_prices 已重灌 ${seedRows.length} 条 (v${DEVICE_SEED_VERSION})`)
-  }
 
   // 6) 初始管理员（环境变量驱动，幂等）
   const initUser = process.env.INIT_ADMIN_USERNAME
