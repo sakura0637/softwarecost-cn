@@ -6,7 +6,7 @@ import { useAuth } from '~/composables/useAuth'
 
 const { api, can, me } = useAuth()
 
-const activeTab = ref<'stations' | 'devices' | 'links'>('stations')
+const activeTab = ref<'stations' | 'devices' | 'links' | 'logs'>('stations')
 const canEdit = computed(() => can('devices:edit'))
 const canDelete = computed(() => can('devices:delete'))
 const canCreate = computed(() => can('devices:edit')) // 新增复用 edit 权限
@@ -226,6 +226,47 @@ function fmt(n: number | null | undefined): string {
   return n === null || n === undefined ? '—' : Number(n).toLocaleString('zh-CN', { maximumFractionDigits: 2 })
 }
 
+// ── Tab4 操作记录 ────────────────────────────────────────────────
+const logItems = ref<any[]>([])
+const logTotal = ref(0)
+const logPage = ref(1)
+const logLoading = ref(false)
+const logEntityType = ref('')
+const logAction = ref('')
+const logEntityOptions = [
+  { value: '', label: '全部实体' },
+  { value: 'station', label: '站点' },
+  { value: 'device', label: '设备' },
+  { value: 'station_device', label: '站点-设备对照' }
+]
+const logActionOptions = [
+  { value: '', label: '全部动作' },
+  { value: 'create', label: '新增' },
+  { value: 'update', label: '修改' },
+  { value: 'delete', label: '删除' }
+]
+function fmtLogVal(v: any): string {
+  if (v === undefined) return '—'
+  if (v === null) return '空'
+  if (typeof v === 'object') return JSON.stringify(v)
+  return String(v)
+}
+async function loadLogs() {
+  logLoading.value = true
+  try {
+    const params = new URLSearchParams()
+    if (logEntityType.value) params.set('entity_type', logEntityType.value)
+    if (logAction.value) params.set('action', logAction.value)
+    params.set('page', String(logPage.value))
+    const r: any = await api(`/api/admin/operation-logs?${params.toString()}`)
+    logItems.value = r.items || []
+    logTotal.value = r.total || 0
+  } catch (e: any) { alert(e?.data?.statusMessage || '加载操作记录失败') }
+  finally { logLoading.value = false }
+}
+watch([logEntityType, logAction], () => { logPage.value = 1; loadLogs() })
+watch(activeTab, (t) => { if (t === 'logs') loadLogs() })
+
 onMounted(async () => {
   await me()
   if (!can('devices:view')) { useRouter().push('/'); return }
@@ -255,6 +296,7 @@ onMounted(async () => {
           <button class="px-4 py-2 text-sm font-medium" :class="activeTab==='stations' ? 'border-b-2 border-primary text-primary' : 'text-gray-500 hover:text-gray-700'" @click="activeTab='stations'">站点维护</button>
           <button class="px-4 py-2 text-sm font-medium" :class="activeTab==='devices' ? 'border-b-2 border-primary text-primary' : 'text-gray-500 hover:text-gray-700'" @click="activeTab='devices'">设备维护</button>
           <button class="px-4 py-2 text-sm font-medium" :class="activeTab==='links' ? 'border-b-2 border-primary text-primary' : 'text-gray-500 hover:text-gray-700'" @click="activeTab='links'">站点-设备对照</button>
+          <button class="px-4 py-2 text-sm font-medium" :class="activeTab==='logs' ? 'border-b-2 border-primary text-primary' : 'text-gray-500 hover:text-gray-700'" @click="activeTab='logs'">操作记录</button>
         </div>
 
         <!-- ===== Tab1 站点维护 ===== -->
@@ -435,6 +477,70 @@ onMounted(async () => {
             <button class="rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-600 hover:bg-gray-100 disabled:opacity-40" :disabled="linkResult.items.length<50" @click="linkPage++; loadLinks()">下一页</button>
           </div>
         </div>
+
+        <!-- ===== Tab4 操作记录 ===== -->
+        <div v-if="activeTab==='logs'">
+          <div class="mb-4 flex flex-wrap items-end gap-3">
+            <div class="w-44">
+              <label class="mb-1 block text-xs text-gray-400">实体</label>
+              <select v-model="logEntityType" class="w-full rounded-lg border border-gray-200 px-4 py-2.5 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20">
+                <option v-for="o in logEntityOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
+              </select>
+            </div>
+            <div class="w-44">
+              <label class="mb-1 block text-xs text-gray-400">动作</label>
+              <select v-model="logAction" class="w-full rounded-lg border border-gray-200 px-4 py-2.5 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20">
+                <option v-for="o in logActionOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
+              </select>
+            </div>
+            <p class="ml-auto text-sm text-gray-500">共 {{ logTotal.toLocaleString() }} 条记录 <span v-if="logLoading" class="ml-2 text-primary">加载中…</span></p>
+          </div>
+          <div class="overflow-hidden rounded-lg border border-gray-100">
+            <div class="max-h-[55vh] min-h-[200px] overflow-auto">
+              <table class="w-full min-w-[800px] text-left text-sm">
+                <thead class="sticky top-0 z-10 bg-gray-50 text-xs uppercase text-gray-500">
+                  <tr>
+                    <th class="px-3 py-3">时间</th>
+                    <th class="px-3 py-3">操作人</th>
+                    <th class="px-3 py-3">实体</th>
+                    <th class="px-3 py-3">动作</th>
+                    <th class="px-3 py-3">变更详情</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-100">
+                  <tr v-for="l in logItems" :key="l.id" class="hover:bg-gray-50">
+                    <td class="px-3 py-2 whitespace-nowrap text-gray-600">{{ l.createdAt }}</td>
+                    <td class="px-3 py-2 text-gray-600">{{ l.operatorName || '—' }}</td>
+                    <td class="px-3 py-2 text-gray-600">{{ l.entityTypeLabel }} #{{ l.entityId }}</td>
+                    <td class="px-3 py-2">
+                      <span :class="{ 'text-green-600': l.action==='create', 'text-blue-600': l.action==='update', 'text-red-600': l.action==='delete' }" class="font-medium">{{ l.actionLabel }}</span>
+                    </td>
+                    <td class="px-3 py-2">
+                      <details class="text-xs">
+                        <summary class="cursor-pointer text-primary">{{ l.changes.length }} 项变更</summary>
+                        <ul class="mt-1 space-y-0.5">
+                          <li v-for="c in l.changes" :key="c.field">
+                            <span class="text-gray-500">{{ c.label }}：</span>
+                            <span class="text-red-500">{{ fmtLogVal(c.old) }}</span>
+                            <span class="text-gray-400"> → </span>
+                            <span class="text-green-600">{{ fmtLogVal(c.new) }}</span>
+                          </li>
+                        </ul>
+                      </details>
+                    </td>
+                  </tr>
+                  <tr v-if="logItems.length === 0"><td colspan="5" class="px-3 py-12 text-center text-gray-400">暂无操作记录</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="mt-4 flex items-center gap-2">
+            <button class="rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-600 hover:bg-gray-100 disabled:opacity-40" :disabled="logPage<=1" @click="logPage--; loadLogs()">上一页</button>
+            <span class="text-sm text-gray-500">第 {{ logPage }} 页</span>
+            <button class="rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-600 hover:bg-gray-100 disabled:opacity-40" :disabled="logItems.length<30" @click="logPage++; loadLogs()">下一页</button>
+          </div>
+        </div>
+
       </div>
     </section>
 

@@ -1,6 +1,7 @@
-import db from '../../utils/db'
+import db from '../../../utils/db'
 import { readBody, createError } from 'h3'
-import { requirePerm } from '../../utils/auth'
+import { requirePerm } from '../../../utils/auth'
+import { logOperation } from '../../../utils/logOperation'
 
 // 新增设备主数据（devices 表）。source='manual' 标记页面手填，不被种子导入覆盖。
 export default defineEventHandler(async (event) => {
@@ -23,5 +24,8 @@ export default defineEventHandler(async (event) => {
       'manual'
     )
 
-  return { ok: true, id: Number(info.lastID) }
+  const newId = Number(info.lastID)
+  const row = await db.prepare('SELECT * FROM devices WHERE id = ?').get(newId)
+  await logOperation({ event, entityType: 'device', entityId: newId, action: 'create', after: row })
+  return { ok: true, id: newId }
 })

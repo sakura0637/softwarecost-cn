@@ -1,6 +1,7 @@
-import db from '../../utils/db'
+import db from '../../../utils/db'
 import { readBody, createError } from 'h3'
-import { requirePerm } from '../../utils/auth'
+import { requirePerm } from '../../../utils/auth'
+import { logOperation } from '../../../utils/logOperation'
 
 // 新增站点/子站。parent_id 为空=新建管理处(level=1)；指定 parent=新建子站(level=2)。
 export default defineEventHandler(async (event) => {
@@ -31,7 +32,10 @@ export default defineEventHandler(async (event) => {
         String(body.remark || '').trim() || null,
         'manual'
       )
-    return { ok: true, id: Number(info.lastID) }
+    const newId = Number(info.lastID)
+    const row = await db.prepare('SELECT * FROM stations WHERE id = ?').get(newId)
+    await logOperation({ event, entityType: 'station', entityId: newId, action: 'create', after: row })
+    return { ok: true, id: newId }
   } catch (e: any) {
     if (e?.code === '23505' || String(e?.message || '').includes('uq_station_name'))
       throw createError({ statusCode: 409, statusMessage: '同一父级下已存在同名站点' })

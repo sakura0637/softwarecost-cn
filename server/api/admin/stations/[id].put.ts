@@ -1,6 +1,7 @@
 import db from '../../../utils/db'
 import { readBody, createError } from 'h3'
 import { requirePerm } from '../../../utils/auth'
+import { logOperation } from '../../../utils/logOperation'
 
 export default defineEventHandler(async (event) => {
   await requirePerm(event, 'devices:edit')
@@ -11,6 +12,9 @@ export default defineEventHandler(async (event) => {
   const body = await readBody(event)
   const name = String(body.name || '').trim()
   if (!name) throw createError({ statusCode: 400, statusMessage: '站点名称为必填' })
+
+  const before = await db.prepare('SELECT * FROM stations WHERE id = ?').get(id)
+  if (!before) throw createError({ statusCode: 404, statusMessage: '站点不存在' })
 
   const parentId = body.parent_id === null || body.parent_id === '' || body.parent_id === undefined ? null : Number(body.parent_id)
   const level = parentId ? 2 : 1
@@ -35,6 +39,8 @@ export default defineEventHandler(async (event) => {
         'manual',
         id
       )
+    const after = await db.prepare('SELECT * FROM stations WHERE id = ?').get(id)
+    await logOperation({ event, entityType: 'station', entityId: id, action: 'update', before, after })
     return { ok: true }
   } catch (e: any) {
     if (e?.code === '23505' || String(e?.message || '').includes('uq_station_name'))

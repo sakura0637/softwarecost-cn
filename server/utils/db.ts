@@ -305,6 +305,22 @@ JOIN devices  d  ON d.id  = sd.device_id
 JOIN stations s  ON s.id  = sd.subsite_id
 LEFT JOIN stations p ON p.id = s.parent_id;
 
+-- ── 操作记录（2026-09-01 新增：记录站点/设备/对照的增删改审计）────────
+CREATE TABLE IF NOT EXISTS operation_logs (
+  id            SERIAL PRIMARY KEY,
+  module        VARCHAR(32)  NOT NULL DEFAULT 'admin/devices',
+  entity_type   VARCHAR(16)  NOT NULL,                  -- station / device / station_device
+  entity_id     INTEGER      NOT NULL,
+  action        VARCHAR(16)  NOT NULL,                  -- create / update / delete
+  operator_id   INTEGER,
+  operator_name VARCHAR(64),
+  changes       JSONB        NOT NULL DEFAULT '[]'::jsonb,  -- [{field,label,old,new}]
+  remark        TEXT,
+  created_at    TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_oplog_entity  ON operation_logs(entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_oplog_created ON operation_logs(created_at DESC);
+
 CREATE TABLE IF NOT EXISTS standard_attachments (
   id           SERIAL PRIMARY KEY,
   standard_id  VARCHAR(64)  NOT NULL,
