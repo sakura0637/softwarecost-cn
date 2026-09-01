@@ -26,7 +26,9 @@ const connectionString =
     return `postgres://${user}:${password}@${host}:${port}/${database}`
   })()
 
-const pool = new pg.Pool({ connectionString, max: 10 })
+// 导出连接池：三表导入等批量操作需要直接用 pool。
+// 注意：直接用 pool 不会触发建表，调用方须先 await db.prepare('SELECT 1').get() 触发 bootstrap。
+export const pool = new pg.Pool({ connectionString, max: 10 })
 
 // ── 附件目录（仍落磁盘，与 DB 分离）────────────────────────────────────
 function resolveUploadDir(): string {
@@ -251,6 +253,76 @@ CREATE INDEX IF NOT EXISTS idx_dp_category ON device_prices(category);
 
 -- 兼容旧库：unit 早期为 VARCHAR(16)，种子里装的是长描述，需加宽到 TEXT（已为 TEXT 时则此句无副作用）
 ALTER TABLE device_prices ALTER COLUMN unit TYPE TEXT;
+
+-- ── 设备价格库范式化三表（2026-09-01 重构）────────────────────────────
+-- 原 device_prices 是宽表，单价在每行重复（平均 5.3 次），改价需改多处 → 更新异常。
+-- 拆分后：单价只在 devices 存一份；对照表 station_devices 只存数量；
+--         合价由 v_device_prices 视图现算（qty × unit_price），永不落地、永不脱节。
+CREATE TABLE IF NOT EXISTS devices (
+  id           SERIAL PRIMARY KEY,
+  category     VARCHAR(64),            -- 顶层分类（工程监控 / 计算机网络 …）
+  subcategory  VARCHAR(64),            -- 子分类（硬件设备 / 软件 …）
+  name         VARCHAR(255) NOT NULL,  -- 设备名称
+  brand_model  VARCHAR(255),           -- 品牌型号
+  unit         TEXT,                   -- 单位
+  unit_price   DOUBLE PRECISION,       -- 单价(元)：全局唯一价格来源
+  remark       TEXT,                   -- 设备级备注
+  source       VARCHAR(16)  NOT NULL DEFAULT 'seed',  -- seed=台账 / manual=页面手填
+  created_at   TIMESTAMPTZ  NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+-- 不建 UNIQUE：存在 317 组「同名同型号不同单价」的历史数据，强制唯一会串价/丢价。
+-- 改由页面层按此索引做「疑似重复」提示。
+CREATE INDEX IF NOT EXISTS idx_dev_lookup ON devices(category, subcategory, name, brand_model, unit);
+CREATE INDEX IF NOT EXISTS idx_dev_name   ON devices(name);
+
+CREATE TABLE IF NOT EXISTS stations (
+  id          SERIAL PRIMARY KEY,
+  parent_id   INTEGER REFERENCES stations(id) ON DELETE RESTRICT,  -- NULL=管理处，否则=子站
+  name        VARCHAR(64) NOT NULL,
+  level       SMALLINT    NOT NULL DEFAULT 2,   -- 1=管理处 2=子站
+  type        VARCHAR(64),                      -- 子站类型
+  is_summary  BOOLEAN     NOT NULL DEFAULT false,-- true=汇总节点（其余9站「全站设备汇总」），统计时排除
+  sort_order  INTEGER     NOT NULL DEFAULT 0,
+  remark      TEXT,
+  source      VARCHAR(16) NOT NULL DEFAULT 'seed',  -- seed=台账 / manual=页面手填（manual 不被种子覆盖）
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- parent_id 可为 NULL，普通 UNIQUE 不去重 NULL，故用 COALESCE 表达式索引
+CREATE UNIQUE INDEX IF NOT EXISTS uq_station_name  ON stations(COALESCE(parent_id,0), name);
+CREATE INDEX IF NOT EXISTS idx_station_parent ON stations(parent_id);
+
+CREATE TABLE IF NOT EXISTS station_devices (
+  id          SERIAL PRIMARY KEY,
+  subsite_id  INTEGER NOT NULL REFERENCES stations(id) ON DELETE RESTRICT,
+  device_id   INTEGER NOT NULL REFERENCES devices(id)  ON DELETE RESTRICT,
+  qty         DOUBLE PRECISION,        -- 只存数量，单价与合价一律不落这张表
+  remark      TEXT,                    -- 行级备注（原大表 remark 迁移至此）
+  source      VARCHAR(16) NOT NULL DEFAULT 'seed',
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_sd ON station_devices(subsite_id, device_id);
+CREATE INDEX IF NOT EXISTS idx_sd_device ON station_devices(device_id);
+
+-- 统一查询视图：还原成原来大表的呈现形态，合价现算
+CREATE OR REPLACE VIEW v_device_prices AS
+SELECT
+  COALESCE(p.name, s.name) AS station,
+  s.name                   AS subsite,
+  s.is_summary             AS is_summary,
+  d.category, d.subcategory, d.name, d.brand_model, d.unit,
+  sd.qty,
+  d.unit_price,
+  (sd.qty * d.unit_price)  AS total_price,
+  sd.remark,
+  sd.id AS sd_id,
+  d.id  AS device_id,
+  s.id  AS subsite_id
+FROM station_devices sd
+JOIN devices  d  ON d.id  = sd.device_id
+JOIN stations s  ON s.id  = sd.subsite_id
+LEFT JOIN stations p ON p.id = s.parent_id;
 
 CREATE TABLE IF NOT EXISTS standard_attachments (
   id           SERIAL PRIMARY KEY,
@@ -557,12 +629,12 @@ CREATE TABLE IF NOT EXISTS kv (
     }
   }
   const dpCount = Number((await pool.query('SELECT COUNT(*)::int AS c FROM device_prices')).rows[0].c)
-  const verRow = (await pool.query("SELECT v FROM kv WHERE k='device_seed_version'")).rows
-  const needReseed =
-    seedRows.length > 0 &&
-    (verRow.length === 0 || verRow[0].v !== DEVICE_SEED_VERSION || dpCount !== seedRows.length)
+  // 【2026-09-01 改造】旧逻辑：版本不符「或」行数不符 → DELETE 全表重灌。
+  // 后果：管理员在页面手填/改过的设备数据，一次重启就被清空（行数必然与种子不一致）。
+  // 现改为「首次初始化」：只有表为空时才灌种子；之后一律靠页面维护或管理员手动触发导入接口。
+  const needReseed = seedRows.length > 0 && dpCount === 0
   if (needReseed) {
-    await pool.query('DELETE FROM device_prices')
+    await pool.query('DELETE FROM device_prices') // 表为空时无副作用，保留仅作防御
     for (const r of seedRows) {
       await pool.query(
         'INSERT INTO device_prices (station, subsite, category, subcategory, name, unit, brand_model, qty, unit_price, total_price, remark) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
