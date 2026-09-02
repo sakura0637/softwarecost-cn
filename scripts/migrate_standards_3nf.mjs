@@ -120,7 +120,16 @@ async function main() {
     // 跟 standards.id（如 sc-t-0015）对不上，需靠 standard_code / standard_name 兜底。
     hr('3. estimation_parameters → standards 匹配')
     const stdIds = new Set(stdList.map((s) => s.id))
+    const stdById = new Map(stdList.map((s) => [s.id, s]))
     const nameHits = (n) => stdList.filter((s) => s.name && n && (s.name === n || s.name.includes(n) || n.includes(s.name)))
+
+    // 人工兜底映射：参数 standard_id → 标准库 id（或 '__CREATE__' 表示库内无对应、交由 --create-missing 新建）。
+    // 仅用于自动匹配仍误挂/分歧的情况，使迁移结果确定且正确。修改前请主人确认。
+    const OVERRIDE = {
+      'csbsg-2021': 'csia-ssmbk',      // 中国软件行业基准数据报告(SSM-BK-202109) → 是"报告"而非 CSBMK 基准数据
+      'csbmk-2025': 'bscea-csbmk',     // 中国软件行业基准数据（2025）→ 同一 CSBMK 基准的 2025 版
+      'db11-1424-2017': '__CREATE__',  // 北京运维 DB11/T 1424-2017 库内无对应标准 → 新建（勿误挂 GB/T 28827.7）
+    }
     const eps = await q('SELECT id, standard_id, standard_code, standard_name, param_name FROM estimation_parameters')
 
     // 按 standard_id 分组做匹配，避免重复计算
@@ -136,7 +145,12 @@ async function main() {
     for (const [sid, g] of groupMap) {
       const p = g.src
       let m
-      if (stdIds.has(sid)) {
+      const ov = OVERRIDE[sid]
+      if (ov === '__CREATE__') {
+        m = { conf: 'none' }
+      } else if (ov && stdById.get(ov)) {
+        m = { std: stdById.get(ov), via: 'override', conf: 'exact' }
+      } else if (stdIds.has(sid)) {
         m = { std: stdList.find((s) => s.id === sid), via: 'id', conf: 'exact' }
       } else if (p.standard_code && byCode.get(p.standard_code)) {
         m = { std: byCode.get(p.standard_code), via: 'code', conf: 'exact' }
@@ -365,14 +379,15 @@ async function main() {
       if (MISSING_CREATE) {
         const missingGroups = groups.filter((g) => g.m.conf === 'none')
         for (const g of missingGroups) {
-          const p = g.src
+          const p = (await client.query('SELECT * FROM estimation_parameters WHERE standard_id = $1 LIMIT 1', [g.sid])).rows[0]
+          if (!p) continue
           const newId = `auto-${g.sid}`
           const exist = (await client.query('SELECT id FROM standards WHERE id = $1', [newId])).rows[0]
           if (!exist) {
             await client.query(
               `INSERT INTO standards (id, category, name, code, region, org, summary, source, is_enabled)
                VALUES ($1,$2,$3,$4,$5,$6,$7,'seed',true)`,
-              [newId, '其他', p.standard_name, p.standard_code || null, p.region || null, p.org || null,
+              [newId, p.category || '其他', p.standard_name, p.standard_code || null, p.region || null, p.org || null,
                `迁移脚本自动补建：原 estimation_parameters.standard_id=${g.sid}`]
             )
             nNewStd++
