@@ -75,6 +75,7 @@ export default defineEventHandler(async (event) => {
       entityName,
       action: r.action,
       actionLabel: ACTION_LABELS[r.action] || r.action,
+      reverted: !!r.reverted,
       operatorId: r.operator_id,
       operatorName: r.operator_name,
       changes,
