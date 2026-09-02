@@ -1,5 +1,6 @@
 <script setup lang="ts">
 // 造价标准库页面：标准数据从数据库读取（/api/standards），失败回退静态数据
+// 参数明细（standard_parameters 从表）随标准一起返回，并在详情/编辑中合并展示与维护
 import { ref, computed, onMounted, reactive } from 'vue'
 import { standards as fallbackStandards, type CostStandard } from '~/composables/useStandards'
 import { useAuth } from '~/composables/useAuth'
@@ -166,14 +167,12 @@ const editing = ref<CostStandard | null>(null) // 编辑中的标准；null 表�
 const form = reactive({
   id: '', category: '', name: '', code: '', region: '', level: 'industry', org: '', summary: '',
 })
-// 核心参数键值对（每行一个参数名 + 取值），替代原文本每行解析
-const formParams = ref<{ key: string; value: string }[]>([])
-const saving = ref(false)
 
 function openNew() {
   editing.value = null
   Object.assign(form, { id: '', category: '', name: '', code: '', region: '', level: 'industry', org: '', summary: '' })
-  formParams.value = []
+  paramRows.value = []
+  paramDraft.value = null
   showAdmin.value = true
 }
 function openEdit(s: CostStandard) {
@@ -182,20 +181,15 @@ function openEdit(s: CostStandard) {
     id: s.id, category: s.category || '', name: s.name, code: s.code || '', region: s.region || '',
     level: s.level || 'industry', org: s.org || '', summary: s.summary || '',
   })
-  formParams.value = (s.params || []).map(k => ({ key: k, value: (s.paramValues?.[k] ?? '') }))
+  loadParams(s.id)
   showAdmin.value = true
 }
 async function saveStandard() {
   if (!form.id.trim() || !form.name.trim()) { alert('id 与 name 必填'); return }
-  const params = formParams.value.map(p => p.key.trim()).filter(Boolean)
-  const paramValues: Record<string, string> = {}
-  for (const p of formParams.value) {
-    const k = p.key.trim()
-    if (k) paramValues[k] = p.value
-  }
+  // 仅保存标准自身字段；参数明细走独立的参数接口维护
   const body = {
     id: form.id.trim(), category: form.category, name: form.name, code: form.code, region: form.region,
-    level: form.level, org: form.org, summary: form.summary, params, paramValues,
+    level: form.level, org: form.org, summary: form.summary, params: [], paramValues: {},
   }
   saving.value = true
   try {
@@ -222,11 +216,66 @@ async function deleteStandard(s: CostStandard) {
     alert(e?.data?.statusMessage || '删除失败')
   }
 }
-function addParam() {
-  formParams.value.push({ key: '', value: '' })
+
+// ===== 参数明细（合并进标准的从表 standard_parameters）=====
+const paramRows = ref<any[]>([])
+const paramDraft = ref<any | null>(null) // 正在新增/编辑的参数草稿
+const savingParam = ref(false)
+
+async function loadParams(stdId: string) {
+  try {
+    const res: any = await $fetch(`/api/standards/${stdId}/parameters`)
+    paramRows.value = res.parameters || []
+  } catch {
+    paramRows.value = []
+  }
 }
-function removeParam(i: number) {
-  formParams.value.splice(i, 1)
+function groupParams(list: any[]) {
+  const map: Record<string, any[]> = {}
+  for (const p of list) (map[p.paramCategory || '未分类'] ||= []).push(p)
+  return Object.entries(map).map(([cat, items]) => ({ cat, items }))
+}
+function startAddParam() {
+  paramDraft.value = { paramCategory: '', paramName: '', paramType: '', unit: '', values: '', description: '', seq: 0 }
+}
+function startEditParam(p: any) {
+  paramDraft.value = { ...p, values: typeof p.values === 'string' ? p.values : JSON.stringify(p.values ?? []) }
+}
+function cancelParam() {
+  paramDraft.value = null
+}
+async function saveParam() {
+  if (!paramDraft.value || !paramDraft.value.paramName?.trim()) { alert('参数名必填'); return }
+  if (!editing.value) return
+  savingParam.value = true
+  try {
+    const d = paramDraft.value
+    const body = {
+      param_category: d.paramCategory, param_name: d.paramName, param_type: d.paramType,
+      unit: d.unit, values: d.values, description: d.description, seq: d.seq,
+    }
+    if (d.id) {
+      await api(`/api/standards/${editing.value.id}/parameters/${d.id}`, { method: 'PUT', body })
+    } else {
+      await api(`/api/standards/${editing.value.id}/parameters`, { method: 'POST', body })
+    }
+    await loadParams(editing.value.id)
+    paramDraft.value = null
+  } catch (e: any) {
+    alert(e?.data?.statusMessage || '保存参数失败')
+  } finally {
+    savingParam.value = false
+  }
+}
+async function removeParam(p: any) {
+  if (!editing.value) return
+  if (!confirm(`确定删除参数「${p.paramName}」？`)) return
+  try {
+    await api(`/api/standards/${editing.value.id}/parameters/${p.id}`, { method: 'DELETE' })
+    await loadParams(editing.value.id)
+  } catch (e: any) {
+    alert(e?.data?.statusMessage || '删除失败')
+  }
 }
 </script>
 
@@ -237,7 +286,7 @@ function removeParam(i: number) {
       <div class="container-custom">
         <h1 class="text-3xl font-bold text-white md:text-4xl">造价标准库</h1>
         <p class="mt-3 max-w-2xl text-blue-100">
-          全面支持各省市、各行业最新软件造价标准 {{ stats.total }}+ 项，兼容 CSBMK / CSBSG 行业基准数据，支持标准自定义。
+          全面支持各省市、各行业最新软件造价标准 {{ stats.total }}+ 项，兼容 CSBMK / CSBSG 行业基准数据，支持标准与参数自定义。
         </p>
         <div class="mt-6 flex flex-wrap gap-3">
           <span class="rounded-lg bg-white/15 px-3 py-1.5 text-sm text-white">国家级 {{ stats.national }}</span>
@@ -361,17 +410,31 @@ function removeParam(i: number) {
               <div class="flex gap-3"><dt class="w-20 flex-shrink-0 text-gray-400">发布机构</dt><dd class="font-medium text-gray-700">{{ selectedStandard.org }}</dd></div>
               <div class="flex gap-3"><dt class="w-20 flex-shrink-0 text-gray-400">说明</dt><dd class="font-medium text-gray-700">{{ selectedStandard.summary }}</dd></div>
             </dl>
+
+            <!-- 参数明细（合并进标准） -->
             <div class="mt-4">
-              <h4 class="mb-2 text-sm font-semibold text-gray-900">核心参数</h4>
-              <div class="space-y-2">
-                <div v-for="p in selectedStandard.params" :key="p" class="flex items-center justify-between rounded-lg bg-gray-50 px-3 py-2 text-sm">
-                  <span class="text-gray-500">{{ p }}</span>
-                  <span class="font-medium text-gray-700">{{ selectedStandard.paramValues?.[p] ?? '—' }}</span>
+              <h4 class="mb-2 text-sm font-semibold text-gray-900">参数明细</h4>
+              <div v-if="selectedStandard.parameters && selectedStandard.parameters.length" class="space-y-3">
+                <div v-for="grp in groupParams(selectedStandard.parameters)" :key="grp.cat" class="rounded-lg bg-gray-50 p-3">
+                  <p class="mb-1 text-xs font-medium text-primary">{{ grp.cat || '未分类' }}</p>
+                  <div v-for="p in grp.items" :key="p.id" class="py-1 text-sm">
+                    <div class="flex items-baseline justify-between gap-2">
+                      <span class="font-medium text-gray-700">{{ p.paramName }}</span>
+                      <span class="shrink-0 text-xs text-gray-400">{{ p.paramType }}{{ p.unit ? ' · ' + p.unit : '' }}</span>
+                    </div>
+                    <div v-if="p.description" class="text-xs text-gray-400">{{ p.description }}</div>
+                    <div v-if="Array.isArray(p.values)" class="mt-0.5 flex flex-wrap gap-1">
+                      <span v-for="(v, vi) in p.values" :key="vi" class="rounded bg-white px-1.5 py-0.5 text-xs text-gray-500">{{ v.label }}：{{ v.factor }}</span>
+                    </div>
+                    <div v-else-if="p.values" class="mt-0.5 text-xs text-gray-500">{{ p.values }}</div>
+                  </div>
                 </div>
               </div>
+              <p v-else class="text-xs text-gray-400">该标准暂无参数明细</p>
             </div>
+
             <div class="mt-6 rounded-lg bg-gray-50 p-4 text-xs text-gray-400">
-              注：以上核心参数已落库，数据来源见各标准原文（如 T/SCSIA 0015-2025、DB 11/T 1010—2019、GB/T 36964-2018）。实际评估请以官方发布的最新标准文本为准。
+              注：以上参数已随标准一并落库（standard_parameters 从表）。实际评估请以官方发布的最新标准文本为准。
             </div>
 
             <!-- 附件（政策原文，后台上传） -->
@@ -525,18 +588,45 @@ function removeParam(i: number) {
                 <label class="col-span-2 text-xs text-gray-500">发布机构<div class="mt-1"><input v-model="form.org" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" /></div></label>
               </div>
               <label class="block text-xs text-gray-500">说明<div class="mt-1"><textarea v-model="form.summary" rows="2" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"></textarea></div></label>
-              <div class="block">
+
+              <!-- 参数明细编辑器（合并进标准） -->
+              <div class="block rounded-lg border border-gray-100 bg-gray-50/50 p-3">
                 <div class="flex items-center justify-between">
-                  <span class="text-xs text-gray-500">核心参数（参数名 + 取值，可逐行增删）</span>
-                  <button type="button" class="text-xs text-primary hover:underline" @click="addParam">+ 添加参数</button>
+                  <span class="text-xs text-gray-500">参数明细（{{ paramRows.length }} 条）</span>
+                  <button type="button" class="text-xs text-primary hover:underline" :disabled="!editing || !!paramDraft" @click="startAddParam">+ 添加参数</button>
                 </div>
-                <div v-if="formParams.length === 0" class="mt-2 text-xs text-gray-400">暂无参数，点击「+ 添加参数」新增</div>
-                <div v-for="(p, i) in formParams" :key="i" class="mt-2 flex items-center gap-2">
-                  <input v-model="p.key" type="text" class="flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm" placeholder="参数名（如 基准生产率）" />
-                  <input v-model="p.value" type="text" class="flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm" placeholder="取值（如 8.5 FP/人月）" />
-                  <button type="button" class="shrink-0 text-xs text-red-500 hover:underline" @click="removeParam(i)">删除</button>
+                <p v-if="!editing" class="mt-2 text-xs text-gray-400">先保存标准，再回来编辑即可添加参数</p>
+                <template v-else>
+                  <div v-for="p in paramRows" :key="p.id" class="mt-2 flex items-center justify-between gap-2 rounded-lg bg-gray-50 px-3 py-2 text-sm">
+                    <div class="min-w-0">
+                      <p class="truncate font-medium text-gray-800">{{ p.paramName }}</p>
+                      <p class="text-xs text-gray-400">{{ p.paramCategory || '未分类' }} · {{ p.paramType }}{{ p.unit ? ' · ' + p.unit : '' }}</p>
+                    </div>
+                    <div class="flex shrink-0 gap-2">
+                      <button class="text-xs text-blue-500 hover:underline" :disabled="!!paramDraft" @click="startEditParam(p)">编辑</button>
+                      <button class="text-xs text-red-500 hover:underline" :disabled="!!paramDraft" @click="removeParam(p)">删除</button>
+                    </div>
+                  </div>
+                  <p v-if="paramRows.length === 0" class="mt-2 text-xs text-gray-400">暂无参数</p>
+                </template>
+
+                <!-- 参数草稿表单 -->
+                <div v-if="paramDraft" class="mt-3 space-y-2 rounded-lg border border-gray-200 p-3">
+                  <div class="grid grid-cols-2 gap-2">
+                    <input v-model="paramDraft.paramCategory" class="rounded-lg border border-gray-200 px-2 py-1.5 text-sm" placeholder="分类（如 规模度量-功能点相关）" />
+                    <input v-model="paramDraft.paramName" class="rounded-lg border border-gray-200 px-2 py-1.5 text-sm" placeholder="参数名（必填）" />
+                    <input v-model="paramDraft.paramType" class="rounded-lg border border-gray-200 px-2 py-1.5 text-sm" placeholder="类型（weight/factor/rate…）" />
+                    <input v-model="paramDraft.unit" class="rounded-lg border border-gray-200 px-2 py-1.5 text-sm" placeholder="单位（如 人月/元）" />
+                  </div>
+                  <textarea v-model="paramDraft.description" rows="2" class="w-full rounded-lg border border-gray-200 px-2 py-1.5 text-sm" placeholder="说明"></textarea>
+                  <textarea v-model="paramDraft.values" rows="2" class="w-full rounded-lg border border-gray-200 px-2 py-1.5 text-sm" placeholder='取值 JSON，如 [{"label":"高","factor":0.3333}]'></textarea>
+                  <div class="flex justify-end gap-2">
+                    <button class="rounded-lg px-3 py-1.5 text-sm text-gray-500 hover:bg-gray-100" :disabled="savingParam" @click="cancelParam">取消</button>
+                    <button :disabled="savingParam" class="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50" @click="saveParam">{{ savingParam ? '保存中…' : '保存参数' }}</button>
+                  </div>
                 </div>
               </div>
+
               <div class="flex justify-end gap-2 pt-2">
                 <button class="rounded-lg px-3 py-1.5 text-sm text-gray-500 hover:bg-gray-100" @click="editing = null">返回列表</button>
                 <button :disabled="saving" class="rounded-lg bg-primary px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50" @click="saveStandard">{{ saving ? '保存中…' : '保存' }}</button>

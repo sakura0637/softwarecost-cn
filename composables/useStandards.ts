@@ -12,6 +12,18 @@ export interface CostStandard {
   summary: string
   params: string[]
   paramValues?: Record<string, string | number>
+  parameters?: CostStandardParameter[]
+}
+
+export interface CostStandardParameter {
+  id: number
+  paramCategory: string
+  paramName: string
+  paramType: string
+  unit: string
+  values: any
+  description: string
+  seq: number
 }
 
 export const standards: CostStandard[] = [

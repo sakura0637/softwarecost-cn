@@ -12,7 +12,6 @@ const navItems = [
   { label: '设备价格库', to: '/devices', module: 'devices' },
   { label: '行业基准数据', to: '/industry', module: 'industry' },
   { label: '省市计价数据', to: '/city', module: 'city' },
-  { label: '参数设置', to: '/parameters', module: 'parameters' },
   { label: '工作台', to: '/projects', module: 'projects' },
 ]
 // 管理模块：默认按 `${module}:view` 判断；也可显式指定 perm
