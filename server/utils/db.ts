@@ -347,6 +347,44 @@ CREATE TABLE IF NOT EXISTS standards (
 
 -- 兼容旧库：新增启用开关（标准卡片的「启用/停用」状态，无副作用）
 ALTER TABLE standards ADD COLUMN IF NOT EXISTS is_enabled BOOLEAN DEFAULT true;
+-- 主从重构新增列：版次 / 实施日期 / 数据来源（seed=种子灌入，manual=人工维护，种子重灌只覆盖 seed）
+ALTER TABLE standards ADD COLUMN IF NOT EXISTS edition TEXT;
+ALTER TABLE standards ADD COLUMN IF NOT EXISTS effective_date DATE;
+ALTER TABLE standards ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'seed';
+
+-- 标准测算参数（1:1 从表）：一份标准一套测算取值，取代 estimation_benchmarks 里的冗余副本。
+-- 注意：唯一索引由迁移脚本在数据校验通过后单独创建，不放这里（DDL 无 try-catch，失败会全站 500）。
+CREATE TABLE IF NOT EXISTS standard_benchmarks (
+  id                 SERIAL PRIMARY KEY,
+  standard_id        TEXT NOT NULL,
+  ufp_method         TEXT,
+  ufp_weights        TEXT,
+  reuse_factors      TEXT,
+  cf                 TEXT,
+  pdr                TEXT,
+  hm                 NUMERIC,
+  rate               NUMERIC,
+  adjustment_factors TEXT,
+  source             TEXT,
+  created_at         TIMESTAMPTZ DEFAULT now(),
+  updated_at         TIMESTAMPTZ DEFAULT now()
+);
+
+-- 标准参数明细（1:N 从表，行式）：取代 estimation_parameters 与 standards.params JSON 列
+CREATE TABLE IF NOT EXISTS standard_parameters (
+  id              SERIAL PRIMARY KEY,
+  standard_id     TEXT NOT NULL,
+  param_category  TEXT,
+  param_name      TEXT NOT NULL,
+  param_type      TEXT,
+  unit            TEXT,
+  values          TEXT,
+  description     TEXT,
+  seq             INTEGER DEFAULT 0,
+  created_at      TIMESTAMPTZ DEFAULT now(),
+  updated_at      TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_sp_std ON standard_parameters(standard_id);
 
 CREATE TABLE IF NOT EXISTS estimation_benchmarks (
   id TEXT PRIMARY KEY,

@@ -14,6 +14,7 @@ export const PERMISSION_MODULES: PermissionModule[] = [
   { key: 'city', name: '省市计价数据分析', actions: ['view'] },
   { key: 'parameters', name: '参数设置', actions: ['view'] },
   { key: 'projects', name: '工作台', actions: ['view', 'create', 'edit', 'delete'] },
+  { key: 'data', name: '数据维护', actions: ['view', 'create', 'edit', 'delete'] },
   { key: 'admin-users', name: '用户管理', actions: ['view', 'create', 'edit', 'delete'] },
   { key: 'admin-roles', name: '角色管理', actions: ['view', 'create', 'edit', 'delete'] },
   { key: 'admin-permissions', name: '权限管理', actions: ['view', 'edit'] },
