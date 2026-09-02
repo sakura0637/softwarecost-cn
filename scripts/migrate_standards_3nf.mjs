@@ -20,6 +20,8 @@ import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 
 const MODE = process.argv.includes('--apply') ? 'apply' : 'dry-run'
+// --create-missing：为 estimation_parameters 里标准库缺失的标准，用参数自带的元信息补建 standards 记录再挂载
+const MISSING_CREATE = process.argv.includes('--create-missing')
 const BAK_SUFFIX = 'bak_20260902'
 
 function resolveDatabaseUrl() {
@@ -38,6 +40,19 @@ function safeParse(v, def) {
     try { return JSON.parse(v) } catch { return def }
   }
   return v
+}
+
+// 标准编号归一化：破折号/连字符统一、全角括号转半角、去空格、转小写。
+// 用于跨表按编号匹配时容错（如 DB 11/T 1010—2019 与 DB11/T 1010-2019、豫财预〔2024〕105号 与 豫财预(2024)105号）。
+function normCode(c) {
+  if (!c) return ''
+  return String(c)
+    .replace(/[—–−]/g, '-')          // 长破折号/短破折号/减号 → 连字符
+    .replace(/[〔【]/g, '(')         // 全角左括号 → 半角
+    .replace(/[〕】]/g, ')')         // 全角右括号 → 半角
+    .replace(/\s+/g, '')            // 去所有空白
+    .toLowerCase()
+    .trim()
 }
 
 const line = (s = '') => console.log(s)
@@ -81,14 +96,16 @@ async function main() {
     hr('2. estimation_benchmarks → standards 匹配')
     const stdList = await q('SELECT id, code, name FROM standards')
     const byCode = new Map(stdList.filter((s) => s.code).map((s) => [s.code, s]))
+    const byCodeNorm = new Map(stdList.filter((s) => s.code).map((s) => [normCode(s.code), s]))
     const byName = new Map(stdList.map((s) => [s.name, s]))
     const bms = await q('SELECT id, standard_code, standard_name FROM estimation_benchmarks')
 
     const bmMatched = []
     const bmOrphan = []
     for (const b of bms) {
-      const hit = (b.standard_code && byCode.get(b.standard_code)) || byName.get(b.standard_name)
-      if (hit) bmMatched.push({ b, std: hit, via: b.standard_code && byCode.get(b.standard_code) ? 'code' : 'name' })
+      const hitCode = (b.standard_code && byCode.get(b.standard_code)) || (b.standard_code && byCodeNorm.get(normCode(b.standard_code)))
+      const hit = hitCode || byName.get(b.standard_name)
+      if (hit) bmMatched.push({ b, std: hit, via: hitCode ? 'code' : 'name' })
       else bmOrphan.push(b)
     }
     line(`  可匹配：${bmMatched.length} / ${bms.length}`)
@@ -99,17 +116,76 @@ async function main() {
     }
 
     // ── 3) parameters → standards 匹配分析 ────────────────────────
+    // estimation_parameters.standard_id 用的是另一套命名（如 scsia-0015-2025），
+    // 跟 standards.id（如 sc-t-0015）对不上，需靠 standard_code / standard_name 兜底。
     hr('3. estimation_parameters → standards 匹配')
     const stdIds = new Set(stdList.map((s) => s.id))
-    const eps = await q('SELECT id, standard_id, param_name FROM estimation_parameters')
-    const epOk = eps.filter((p) => stdIds.has(p.standard_id))
-    const epBad = eps.filter((p) => !stdIds.has(p.standard_id))
-    line(`  外键有效：${epOk.length} / ${eps.length}`)
-    if (epBad.length) {
-      line(`  指向不存在的标准（不迁移）：${epBad.length}`)
-      const badIds = [...new Set(epBad.map((p) => p.standard_id))].slice(0, 10)
-      for (const id of badIds) line(`    × standard_id=${id}  （${epBad.filter((p) => p.standard_id === id).length} 条）`)
+    const nameHits = (n) => stdList.filter((s) => s.name && n && (s.name === n || s.name.includes(n) || n.includes(s.name)))
+    const eps = await q('SELECT id, standard_id, standard_code, standard_name, param_name FROM estimation_parameters')
+
+    // 按 standard_id 分组做匹配，避免重复计算
+    const groupMap = new Map()
+    for (const p of eps) {
+      if (!groupMap.has(p.standard_id)) groupMap.set(p.standard_id, { src: p, count: 0 })
+      groupMap.get(p.standard_id).count++
     }
+    const matchById = new Map()   // 原 standard_id → 匹配结果
+    const epOk = []
+    const epBad = []
+    const groups = []
+    for (const [sid, g] of groupMap) {
+      const p = g.src
+      let m
+      if (stdIds.has(sid)) {
+        m = { std: stdList.find((s) => s.id === sid), via: 'id', conf: 'exact' }
+      } else if (p.standard_code && byCode.get(p.standard_code)) {
+        m = { std: byCode.get(p.standard_code), via: 'code', conf: 'exact' }
+      } else if (p.standard_code && byCodeNorm.get(normCode(p.standard_code))) {
+        m = { std: byCodeNorm.get(normCode(p.standard_code)), via: 'code(归一化)', conf: 'exact' }
+      } else {
+        const exact = stdList.find((s) => s.name === p.standard_name)
+        if (exact) m = { std: exact, via: 'name', conf: 'exact' }
+        else {
+          const fuzzy = nameHits(p.standard_name)
+          if (fuzzy.length === 1) m = { std: fuzzy[0], via: 'name-fuzzy', conf: 'fuzzy' }
+          else if (fuzzy.length > 1) m = { candidates: fuzzy, conf: 'ambiguous' }
+          else m = { conf: 'none' }
+        }
+      }
+      matchById.set(sid, m)
+      groups.push({ sid, ...g, m })
+    }
+    const epOkWithConf = []
+    for (const p of eps) {
+      const m = matchById.get(p.standard_id)
+      if (m && m.std) { epOk.push({ p, std: m.std }); epOkWithConf.push({ p, std: m.std, conf: m.conf }) }
+      else if (m && m.candidates) epOkWithConf.push({ p, std: null, conf: 'ambiguous' })
+      else epBad.push(p)
+    }
+
+    line(`  按参数行统计：可匹配 ${epOk.length} / ${eps.length}`)
+    const ICON = { exact: '✓', fuzzy: '≈', ambiguous: '?', none: '×' }
+    const CONF_TXT = { exact: '精确', fuzzy: '模糊（需人工确认）', ambiguous: '多候选（需人工指定）', none: '未匹配' }
+    for (const g of groups) {
+      const m = g.m
+      if (m.std) {
+        line(`  ${ICON[m.conf]} ${g.sid}  (${g.count} 条) → standards.id=${m.std.id}`)
+        line(`      参数侧名称：${g.src.standard_name}`)
+        line(`      标准库名称：${m.std.name}   【按 ${m.via} 匹配 · ${CONF_TXT[m.conf]}】`)
+      } else if (m.candidates) {
+        line(`  ${ICON.ambiguous} ${g.sid}  (${g.count} 条) → 匹配到 ${m.candidates.length} 个候选，需人工指定`)
+        line(`      参数侧名称：${g.src.standard_name}`)
+        for (const c of m.candidates) line(`        候选：${c.id}  ${c.name}`)
+      } else {
+        line(`  ${ICON.none} ${g.sid}  (${g.count} 条) → 标准库无对应，建议按参数元信息新建标准`)
+        line(`      名称：${g.src.standard_name}   编号：${g.src.standard_code || '—'}`)
+      }
+    }
+    line()
+    line(`  精确匹配组：${groups.filter((g) => g.m.conf === 'exact').length}` +
+         `　模糊：${groups.filter((g) => g.m.conf === 'fuzzy').length}` +
+         `　多候选：${groups.filter((g) => g.m.conf === 'ambiguous').length}` +
+         `　未匹配：${groups.filter((g) => g.m.conf === 'none').length}`)
 
     // ── 4) standards.params JSON 拆行分析 ─────────────────────────
     hr('4. standards.params / param_values JSON 拆行')
@@ -133,9 +209,9 @@ async function main() {
 
     // 与 estimation_parameters 的重名冲突
     const epByStd = new Map()
-    for (const p of epOk) {
-      if (!epByStd.has(p.standard_id)) epByStd.set(p.standard_id, new Set())
-      epByStd.get(p.standard_id).add(p.param_name)
+    for (const { p, std } of epOk) {
+      if (!epByStd.has(std.id)) epByStd.set(std.id, new Set())
+      epByStd.get(std.id).add(p.param_name)
     }
     let crossDup = 0
     for (const s of stdWithJson) {
@@ -168,7 +244,14 @@ async function main() {
     hr('结论')
     const plan = []
     plan.push(`standard_benchmarks  将写入 ${bmMatched.length} 条${bmOrphan.length ? `（${bmOrphan.length} 条孤儿跳过）` : ''}`)
-    plan.push(`standard_parameters  将写入 ${epOk.length + (jsonRows - crossDup)} 条（参数明细 ${epOk.length} + JSON 拆行 ${jsonRows - crossDup}）`)
+    const nExact = groups.filter((g) => g.m.conf === 'exact').reduce((a, g) => a + g.count, 0)
+    const nFuzzy = groups.filter((g) => g.m.conf === 'fuzzy').reduce((a, g) => a + g.count, 0)
+    const nAmb = groups.filter((g) => g.m.conf === 'ambiguous').reduce((a, g) => a + g.count, 0)
+    const nNone = groups.filter((g) => g.m.conf === 'none').reduce((a, g) => a + g.count, 0)
+    plan.push(`standard_parameters  将写入 ${epOk.length + (jsonRows - crossDup)} 条` +
+              `（参数明细 ${epOk.length} = 精确 ${nExact} + 模糊 ${nFuzzy}，JSON 拆行 ${jsonRows - crossDup}）`)
+    if (nAmb) plan.push(`⚠ 多候选待人工指定：${nAmb} 条（本次不迁移）`)
+    if (nNone) plan.push(`⚠ 标准库缺失：${nNone} 条${MISSING_CREATE ? '（将用 --create-missing 补建标准）' : '（加 --create-missing 可自动补建标准）'}`)
     plan.push(`provincial_pricing   唯一索引 ${ppDup.length === 0 ? '可建' : '暂不可建（需先清理重复）'}`)
     plan.push(`city_rates           唯一索引 ${crDup.length === 0 && crNullOrg === 0 ? '可建' : '暂不可建（需先清理重复或填 benchmark_org）'}`)
     for (const p of plan) line(`  · ${p}`)
@@ -255,21 +338,63 @@ async function main() {
       line(`  standard_benchmarks  ${nBm} 条`)
 
       // 7.4 迁移参数明细（1:N）——先 estimation_parameters，再补 JSON 拆行
+      // 策略：exact/fuzzy 组迁移（fuzzy 会在结束时提醒复核）；ambiguous 组跳过等人工指定；
+      //       none 组仅当传了 --create-missing 时，用参数自带的元信息在 standards 里补建标准后再挂。
       let nEp = 0
-      for (const p of epOk) {
+      let nSkipAmb = 0
+      let nNewStd = 0
+      const fuzzyForReview = []
+      for (const { p, std, conf } of epOkWithConf) {
+        if (conf === 'ambiguous') { nSkipAmb++; continue }
         const src = (await client.query('SELECT * FROM estimation_parameters WHERE id = $1', [p.id])).rows[0]
         const exist = (await client.query(
-          'SELECT id FROM standard_parameters WHERE standard_id = $1 AND param_name = $2', [src.standard_id, src.param_name]
+          'SELECT id FROM standard_parameters WHERE standard_id = $1 AND param_name = $2', [std.id, src.param_name]
         )).rows[0]
         if (exist) continue
         await client.query(
           `INSERT INTO standard_parameters (standard_id, param_category, param_name, param_type, unit, values, description, seq)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-          [src.standard_id, src.param_category, src.param_name, src.param_type, src.unit, src.values, src.description, src.seq || 0]
+          [std.id, src.param_category, src.param_name, src.param_type, src.unit, src.values, src.description, src.seq || 0]
         )
         nEp++
+        if (conf === 'fuzzy') fuzzyForReview.push(`${std.id} ← ${src.standard_name}`)
       }
-      line(`  standard_parameters  来自参数明细 ${nEp} 条`)
+      line(`  standard_parameters  来自参数明细 ${nEp} 条${nSkipAmb ? `（跳过多候选 ${nSkipAmb} 条）` : ''}`)
+
+      // 7.4b 为标准库缺失的标准补建记录（需 --create-missing）
+      if (MISSING_CREATE) {
+        const missingGroups = groups.filter((g) => g.m.conf === 'none')
+        for (const g of missingGroups) {
+          const p = g.src
+          const newId = `auto-${g.sid}`
+          const exist = (await client.query('SELECT id FROM standards WHERE id = $1', [newId])).rows[0]
+          if (!exist) {
+            await client.query(
+              `INSERT INTO standards (id, category, name, code, region, org, summary, source, is_enabled)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,'seed',true)`,
+              [newId, '其他', p.standard_name, p.standard_code || null, p.region || null, p.org || null,
+               `迁移脚本自动补建：原 estimation_parameters.standard_id=${g.sid}`]
+            )
+            nNewStd++
+            line(`  + 补建标准 ${newId}  ${p.standard_name}`)
+          }
+          const rows = (await client.query('SELECT * FROM estimation_parameters WHERE standard_id = $1', [g.sid])).rows
+          let n = 0
+          for (const src of rows) {
+            const dup = (await client.query(
+              'SELECT id FROM standard_parameters WHERE standard_id = $1 AND param_name = $2', [newId, src.param_name]
+            )).rows[0]
+            if (dup) continue
+            await client.query(
+              `INSERT INTO standard_parameters (standard_id, param_category, param_name, param_type, unit, values, description, seq)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+              [newId, src.param_category, src.param_name, src.param_type, src.unit, src.values, src.description, src.seq || 0]
+            )
+            n++
+          }
+          line(`     └ 挂载参数 ${n} 条`)
+        }
+      }
 
       let nJson = 0
       for (const s of stdWithJson) {
@@ -312,6 +437,13 @@ async function main() {
       await client.query('COMMIT')
       hr('迁移完成')
       line('  旧表未删除，已备份为 *_' + BAK_SUFFIX + '，可随时回退。')
+      if (nNewStd) line(`  补建标准 ${nNewStd} 条（id 前缀 auto-，请在 /admin/data 核对后补充分类与摘要）`)
+      if (fuzzyForReview.length) {
+        line()
+        line('  ⚠ 以下为模糊匹配，请人工复核是否挂对了标准：')
+        for (const f of [...new Set(fuzzyForReview)]) line(`    ${f}`)
+      }
+      if (nSkipAmb) line(`  ⚠ ${nSkipAmb} 条参数因多候选未迁移，需人工指定后重跑`)
     } catch (e) {
       await client.query('ROLLBACK')
       line(`× 迁移失败，已整段回滚：${e.message}`)
