@@ -16,7 +16,11 @@ const stations = ref<any[]>([])
 const stationLoading = ref(false)
 async function loadStations() {
   stationLoading.value = true
-  try { stations.value = (await api('/api/admin/stations')).items } catch (e: any) { alert(e?.data?.statusMessage || '加载站点失败') }
+  try {
+    stations.value = (await api('/api/admin/stations')).items
+    // 默认折叠所有管理处下的子站
+    collapsedStations.value = new Set(rootStations.value.map((s) => s.id))
+  } catch (e: any) { alert(e?.data?.statusMessage || '加载站点失败') }
   finally { stationLoading.value = false }
 }
 const rootStations = computed(() => stations.value.filter((s) => !s.parent_id))
