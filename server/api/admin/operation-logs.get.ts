@@ -27,14 +27,25 @@ export default defineEventHandler(async (event) => {
 
   const where: string[] = []
   const params: any[] = []
-  if (entityType) { where.push('entity_type = ?'); params.push(entityType) }
-  if (entityId) { where.push('entity_id = ?'); params.push(entityId) }
-  if (action) { where.push('action = ?'); params.push(action) }
+  if (entityType) { where.push('l.entity_type = ?'); params.push(entityType) }
+  if (entityId) { where.push('l.entity_id = ?'); params.push(entityId) }
+  if (action) { where.push('l.action = ?'); params.push(action) }
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : ''
 
-  const total = Number((await db.prepare(`SELECT COUNT(*) AS c FROM operation_logs ${whereSql}`).get(...params) as { c: any }).c)
+  const total = Number((await db.prepare(`SELECT COUNT(*) AS c FROM operation_logs ${whereSql.replace(/l\./g, '')}`).get(...params) as { c: any }).c)
   const rows = (await db
-    .prepare(`SELECT id, module, entity_type, entity_id, action, operator_id, operator_name, changes, remark, to_char(created_at AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS') AS created_at FROM operation_logs ${whereSql} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`)
+    .prepare(`SELECT l.id, l.module, l.entity_type, l.entity_id, l.action, l.operator_id, l.operator_name, l.changes, l.remark,
+      to_char(l.created_at AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS') AS created_at,
+      EXISTS (
+        SELECT 1 FROM operation_logs r
+        WHERE r.action = 'revert'
+          AND r.entity_type = l.entity_type
+          AND r.entity_id = l.entity_id
+          AND r.remark LIKE ('撤销 #' || l.id || ' 的%')
+      ) AS reverted
+      FROM operation_logs l
+      ${whereSql}
+      ORDER BY l.created_at DESC, l.id DESC LIMIT ? OFFSET ?`)
     .all(...params, pageSize, (page - 1) * pageSize)) as any[]
 
   const items = await Promise.all(rows.map(async (r) => {

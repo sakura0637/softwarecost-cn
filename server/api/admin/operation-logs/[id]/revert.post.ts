@@ -32,6 +32,12 @@ export default defineEventHandler(async (event) => {
   if (!TABLE_OF[entityType]) throw createError({ statusCode: 400, statusMessage: '不支持的实体类型' })
   if (action === 'revert') throw createError({ statusCode: 400, statusMessage: '撤销操作不可再撤销' })
 
+  // 防重复撤销：检查是否已存在针对此日志的撤销记录
+  const dup = await db
+    .prepare("SELECT id FROM operation_logs WHERE action = 'revert' AND entity_type = ? AND entity_id = ? AND remark LIKE ? LIMIT 1")
+    .get(entityType, entityId, `撤销 #${id} 的%`) as any
+  if (dup) throw createError({ statusCode: 409, statusMessage: '该操作已被撤销，请勿重复撤销' })
+
   let changes: any[] = []
   try { changes = typeof log.changes === 'string' ? JSON.parse(log.changes) : (log.changes || []) } catch { changes = [] }
 

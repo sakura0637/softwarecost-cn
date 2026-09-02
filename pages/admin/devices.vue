@@ -245,13 +245,14 @@ const logEntityOptions = [
 ]
 const revertingId = ref<number | null>(null)
 async function revertLog(l: any) {
+  if (l.reverted) { alert('该操作已被撤销，请勿重复撤销'); return }
   if (!confirm(`确定撤销这条「${l.actionLabel}」操作？\n实体：${l.entityName}\n变更时间：${l.createdAt}`)) return
   revertingId.value = l.id
   try {
     await api(`/api/admin/operation-logs/${l.id}/revert`, { method: 'POST' })
     await loadLogs()
     alert('已撤销，记录已刷新')
-  } catch (e: any) { alert(e?.data?.statusMessage || '撤销失败') }
+  } catch (e: any) { alert(e?.data?.statusMessage || '撤销失败'); await loadLogs() }
   finally { revertingId.value = null }
 }
 const logActionOptions = [
@@ -547,11 +548,16 @@ onMounted(async () => {
                           </div>
                         </details>
                         <button
-                          v-if="l.action !== 'revert'"
+                          v-if="l.action !== 'revert' && !l.reverted"
                           class="shrink-0 rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 disabled:opacity-40"
                           :disabled="revertingId===l.id"
                           @click="revertLog(l)"
                         >{{ revertingId===l.id ? '撤销中…' : '撤销' }}</button>
+                        <span
+                          v-else-if="l.action !== 'revert' && l.reverted"
+                          class="shrink-0 rounded border border-gray-100 bg-gray-100 px-2 py-1 text-xs text-gray-400"
+                          title="该操作已被撤销"
+                        >已撤销</span>
                       </div>
                     </td>
                   </tr>
