@@ -1,6 +1,6 @@
-import db from '../../../utils/db'
+import db from '../../../../utils/db'
 import { createError } from 'h3'
-import { requirePerm, getAuthUser } from '../../../utils/auth'
+import { requirePerm, getAuthUser } from '../../../../utils/auth'
 
 // 撤销一条操作记录：根据原 action 反向还原数据。
 // - create → 删除该实体（有引用则 409 拒绝）
