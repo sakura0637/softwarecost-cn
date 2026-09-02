@@ -282,9 +282,8 @@ async function main() {
     hr('★ 开始迁移')
     const client = await pool.connect()
     try {
+      // 7.1 备份三张旧表（独立事务先提交，确保即便后续迁移失败也有可回退的物理备份）
       await client.query('BEGIN')
-
-      // 7.1 备份三张旧表
       for (const t of ['standards', 'estimation_benchmarks', 'estimation_parameters']) {
         const bak = `${t}_${BAK_SUFFIX}`
         const has = (await client.query(
@@ -294,7 +293,15 @@ async function main() {
         await client.query(`CREATE TABLE ${bak} AS TABLE ${t}`)
         line(`  已备份 ${t} → ${bak}`)
       }
+      await client.query('COMMIT')
 
+      // 7.1b 确保 standards 具备迁移所需列（与 db.ts bootstrap 对齐；服务器未重启时补建，幂等）
+      await client.query('ALTER TABLE standards ADD COLUMN IF NOT EXISTS is_enabled BOOLEAN DEFAULT true')
+      await client.query('ALTER TABLE standards ADD COLUMN IF NOT EXISTS edition TEXT')
+      await client.query('ALTER TABLE standards ADD COLUMN IF NOT EXISTS effective_date DATE')
+      await client.query("ALTER TABLE standards ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'seed'")
+
+      await client.query('BEGIN')
       // 7.2 建新表（幂等）
       await client.query(`
         CREATE TABLE IF NOT EXISTS standard_benchmarks (
