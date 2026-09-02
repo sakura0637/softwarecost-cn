@@ -239,6 +239,17 @@ const logEntityOptions = [
   { value: 'device', label: '设备' },
   { value: 'station_device', label: '站点-设备对照' }
 ]
+const revertingId = ref<number | null>(null)
+async function revertLog(l: any) {
+  if (!confirm(`确定撤销这条「${l.actionLabel}」操作？\n实体：${l.entityName}\n变更时间：${l.createdAt}`)) return
+  revertingId.value = l.id
+  try {
+    await api(`/api/admin/operation-logs/${l.id}/revert`, { method: 'POST' })
+    await loadLogs()
+    alert('已撤销，记录已刷新')
+  } catch (e: any) { alert(e?.data?.statusMessage || '撤销失败') }
+  finally { revertingId.value = null }
+}
 const logActionOptions = [
   { value: '', label: '全部动作' },
   { value: 'create', label: '新增' },
@@ -511,22 +522,33 @@ onMounted(async () => {
                   <tr v-for="l in logItems" :key="l.id" class="hover:bg-gray-50">
                     <td class="px-3 py-2 whitespace-nowrap text-gray-600">{{ l.createdAt }}</td>
                     <td class="px-3 py-2 text-gray-600">{{ l.operatorName || '—' }}</td>
-                    <td class="px-3 py-2 text-gray-600">{{ l.entityTypeLabel }} #{{ l.entityId }}</td>
+                    <td class="px-3 py-2 text-gray-600">{{ l.entityName }}</td>
                     <td class="px-3 py-2">
-                      <span :class="{ 'text-green-600': l.action==='create', 'text-blue-600': l.action==='update', 'text-red-600': l.action==='delete' }" class="font-medium">{{ l.actionLabel }}</span>
+                      <span :class="{ 'text-green-600': l.action==='create', 'text-blue-600': l.action==='update', 'text-red-600': l.action==='delete', 'text-purple-600': l.action==='revert' }" class="font-medium">{{ l.actionLabel }}</span>
                     </td>
                     <td class="px-3 py-2">
-                      <details class="text-xs">
-                        <summary class="cursor-pointer text-primary">{{ l.changes.length }} 项变更</summary>
-                        <ul class="mt-1 space-y-0.5">
-                          <li v-for="c in l.changes" :key="c.field">
-                            <span class="text-gray-500">{{ c.label }}：</span>
-                            <span class="text-red-500">{{ fmtLogVal(c.old) }}</span>
-                            <span class="text-gray-400"> → </span>
-                            <span class="text-green-600">{{ fmtLogVal(c.new) }}</span>
-                          </li>
-                        </ul>
-                      </details>
+                      <div class="flex items-start gap-2">
+                        <details class="text-xs flex-1">
+                          <summary class="cursor-pointer text-primary">{{ l.changes.length }} 项变更</summary>
+                          <div class="mt-1 rounded bg-gray-50 p-2 text-gray-500">
+                            <div class="mb-1">变更时间：{{ l.createdAt }}</div>
+                            <ul class="space-y-0.5">
+                              <li v-for="c in l.changes" :key="c.field">
+                                <span class="text-gray-500">{{ c.label }}：</span>
+                                <span class="text-red-500">{{ fmtLogVal(c.old) }}</span>
+                                <span class="text-gray-400"> → </span>
+                                <span class="text-green-600">{{ fmtLogVal(c.new) }}</span>
+                              </li>
+                            </ul>
+                          </div>
+                        </details>
+                        <button
+                          v-if="l.action !== 'revert'"
+                          class="shrink-0 rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 disabled:opacity-40"
+                          :disabled="revertingId===l.id"
+                          @click="revertLog(l)"
+                        >{{ revertingId===l.id ? '撤销中…' : '撤销' }}</button>
+                      </div>
                     </td>
                   </tr>
                   <tr v-if="logItems.length === 0"><td colspan="5" class="px-3 py-12 text-center text-gray-400">暂无操作记录</td></tr>

@@ -11,7 +11,8 @@ const ENTITY_LABELS: Record<string, string> = {
 const ACTION_LABELS: Record<string, string> = {
   create: '新增',
   update: '修改',
-  delete: '删除'
+  delete: '删除',
+  revert: '撤销'
 }
 
 export default defineEventHandler(async (event) => {
@@ -36,14 +37,31 @@ export default defineEventHandler(async (event) => {
     .prepare(`SELECT id, module, entity_type, entity_id, action, operator_id, operator_name, changes, remark, to_char(created_at AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS') AS created_at FROM operation_logs ${whereSql} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`)
     .all(...params, pageSize, (page - 1) * pageSize)) as any[]
 
-  const items = rows.map((r) => {
+  const items = await Promise.all(rows.map(async (r) => {
     let changes: any[] = []
     try { changes = typeof r.changes === 'string' ? JSON.parse(r.changes) : (r.changes || []) } catch { changes = [] }
+
+    // 实体友好名称：站点带管理处、设备带分类、对照带子站-设备（含分类）
+    let entityName = `${ENTITY_LABELS[r.entity_type] || r.entity_type} #${r.entity_id}`
+    try {
+      if (r.entity_type === 'station') {
+        const s = await db.prepare('SELECT s.name, p.name AS parent_name FROM stations s LEFT JOIN stations p ON s.parent_id = p.id WHERE s.id = ?').get(r.entity_id) as any
+        if (s) entityName = `站点 #${r.entity_id} ${s.parent_name ? s.parent_name + '/' : ''}${s.name}`
+      } else if (r.entity_type === 'device') {
+        const d = await db.prepare('SELECT category, name FROM devices WHERE id = ?').get(r.entity_id) as any
+        if (d) entityName = `设备 #${r.entity_id} ${d.category || ''}/${d.name}`
+      } else if (r.entity_type === 'station_device') {
+        const sd = await db.prepare('SELECT st.name AS subsite_name, d.name AS device_name, d.category AS device_category FROM station_devices sd JOIN stations st ON sd.subsite_id = st.id JOIN devices d ON sd.device_id = d.id WHERE sd.id = ?').get(r.entity_id) as any
+        if (sd) entityName = `站点-设备对照 #${r.entity_id} ${sd.subsite_name} - ${sd.device_category || ''}/${sd.device_name}`
+      }
+    } catch { /* 实体可能已删除，保留默认 id 显示 */ }
+
     return {
       id: r.id,
       entityType: r.entity_type,
       entityTypeLabel: ENTITY_LABELS[r.entity_type] || r.entity_type,
       entityId: r.entity_id,
+      entityName,
       action: r.action,
       actionLabel: ACTION_LABELS[r.action] || r.action,
       operatorId: r.operator_id,
@@ -52,7 +70,7 @@ export default defineEventHandler(async (event) => {
       remark: r.remark,
       createdAt: r.created_at
     }
-  })
+  }))
 
   return { total, page, pageSize, items }
 })
