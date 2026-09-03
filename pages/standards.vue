@@ -277,6 +277,17 @@ async function removeParam(p: any) {
     alert(e?.data?.statusMessage || '删除失败')
   }
 }
+
+// 类型标签（与旧 /parameters 页右侧明细表保持一致）
+const TYPE_LABEL: Record<string, string> = {
+  weight: '权重',
+  factor: '调整因子',
+  rate: '费率',
+  productivity: '生产率',
+  formula: '公式',
+}
+const fmtFactor = (v: number | string) =>
+  typeof v === 'number' ? (Number.isInteger(v) ? String(v) : v.toFixed(v < 1 ? 4 : 2)) : v
 </script>
 
 <template>
@@ -411,22 +422,40 @@ async function removeParam(p: any) {
               <div class="flex gap-3"><dt class="w-20 flex-shrink-0 text-gray-400">说明</dt><dd class="font-medium text-gray-700">{{ selectedStandard.summary }}</dd></div>
             </dl>
 
-            <!-- 参数明细（合并进标准） -->
+            <!-- 参数明细（合并进标准，展示样式对齐旧 /parameters 页右侧明细表：表格 + 中文类型标签） -->
             <div class="mt-4">
               <h4 class="mb-2 text-sm font-semibold text-gray-900">参数明细</h4>
-              <div v-if="selectedStandard.parameters && selectedStandard.parameters.length" class="space-y-3">
-                <div v-for="grp in groupParams(selectedStandard.parameters)" :key="grp.cat" class="rounded-lg bg-gray-50 p-3">
-                  <p class="mb-1 text-xs font-medium text-primary">{{ grp.cat || '未分类' }}</p>
-                  <div v-for="p in grp.items" :key="p.id" class="py-1 text-sm">
-                    <div class="flex items-baseline justify-between gap-2">
-                      <span class="font-medium text-gray-700">{{ p.paramName }}</span>
-                      <span class="shrink-0 text-xs text-gray-400">{{ p.paramType }}{{ p.unit ? ' · ' + p.unit : '' }}</span>
+              <div v-if="selectedStandard.parameters && selectedStandard.parameters.length" class="space-y-4">
+                <div v-for="grp in groupParams(selectedStandard.parameters)" :key="grp.cat" class="rounded-lg bg-gray-50 p-4">
+                  <p class="mb-3 text-xs font-semibold text-primary">{{ grp.cat || '未分类' }}</p>
+                  <div class="space-y-5">
+                    <div v-for="p in grp.items" :key="p.id">
+                      <h5 class="text-base font-semibold text-gray-900">{{ p.paramName }}</h5>
+                      <p class="mt-1 text-xs text-gray-500">
+                        {{ TYPE_LABEL[p.paramType] || p.paramType }}<template v-if="p.unit"> · 单位：{{ p.unit }}</template>
+                      </p>
+                      <p v-if="p.description" class="mt-1 text-sm text-gray-600">{{ p.description }}</p>
+
+                      <div v-if="Array.isArray(p.values) && p.values.length" class="mt-2 overflow-x-auto">
+                        <table class="w-full text-left text-sm">
+                          <thead>
+                            <tr class="border-b border-gray-200 text-gray-500">
+                              <th class="py-2 pr-4 font-medium">因子项</th>
+                              <th class="py-2 pr-4 font-medium text-right">取值</th>
+                              <th class="py-2 pr-4 font-medium">说明</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr v-for="(v, vi) in p.values" :key="vi" class="border-b border-gray-100 hover:bg-gray-50">
+                              <td class="py-2 pr-4 text-gray-800">{{ v.label }}</td>
+                              <td class="py-2 pr-4 text-right font-semibold text-primary">{{ fmtFactor(v.factor) }}</td>
+                              <td class="py-2 pr-4 text-xs text-gray-400">{{ v.desc || p.unit || '-' }}</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                      <p v-else-if="p.values && !Array.isArray(p.values)" class="mt-2 text-sm text-gray-500">{{ p.values }}</p>
                     </div>
-                    <div v-if="p.description" class="text-xs text-gray-400">{{ p.description }}</div>
-                    <div v-if="Array.isArray(p.values)" class="mt-0.5 flex flex-wrap gap-1">
-                      <span v-for="(v, vi) in p.values" :key="vi" class="rounded bg-white px-1.5 py-0.5 text-xs text-gray-500">{{ v.label }}：{{ v.factor }}</span>
-                    </div>
-                    <div v-else-if="p.values" class="mt-0.5 text-xs text-gray-500">{{ p.values }}</div>
                   </div>
                 </div>
               </div>
