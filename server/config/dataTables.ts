@@ -20,7 +20,6 @@ export interface DataTableConf {
 
 export const DATA_CATEGORIES = [
   { key: 'standards', label: '造价标准' },
-  { key: 'devices', label: '设备价格库' },
   { key: 'pricing', label: '地区费率' },
   { key: 'benchmarks', label: '行业基准' },
 ]
@@ -55,38 +54,12 @@ export const DATA_TABLES: DataTableConf[] = [
     json: ['ufp_weights', 'reuse_factors', 'adjustment_factors'],
     fk: { standard_id: { table: 'standards', label: 'name' } },
   },
-  // ── 设备价格库（三表）──
-  {
-    key: 'devices',
-    label: '设备价格目录',
-    category: 'devices',
-    pk: 'id',
-    pkAuto: true,
-    readonly: ['created_at', 'updated_at', 'source'],
-    overwriteCascade: ['station_devices'],
-  },
-  {
-    key: 'stations',
-    label: '站点层级',
-    category: 'devices',
-    pk: 'id',
-    pkAuto: true,
-    readonly: ['created_at', 'source'],
-    fk: { parent_id: { table: 'stations', label: 'name' } },
-    overwriteCascade: ['station_devices'],
-  },
-  {
-    key: 'station_devices',
-    label: '设备-子站对照',
-    category: 'devices',
-    pk: 'id',
-    pkAuto: true,
-    readonly: ['created_at', 'updated_at', 'source'],
-    fk: {
-      subsite_id: { table: 'stations', label: 'name' },
-      device_id: { table: 'devices', label: 'name' },
-    },
-  },
+  // ── 设备价格库三表不在本后台维护（2026-09-03 下线）──
+  // devices / stations / station_devices 统一走 /admin/devices 专用页：
+  //   该页有站点树形层级、删除设备时提示影响条数、操作日志可回滚，比通用表格安全得多。
+  // 另：本后台「覆盖导入」会先清空 overwriteCascade 指定的从表，
+  //    devices / stations 都级联 station_devices，误点一次即清空全站设备对照关系。
+  // 后续如需批量导入设备 Excel，应在 /admin/devices 加专用导入按钮（带校验），不要挂到这里。
   // ── 地区费率 ──
   {
     key: 'provincial_pricing',
