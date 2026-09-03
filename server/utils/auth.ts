@@ -81,6 +81,9 @@ export async function getAuthUserWithPerms(event: any): Promise<{ id: number; ro
 export async function requirePerm(event: any, code: string): Promise<{ id: number; role: string; roles: string[]; permissions: string[]; isAdmin: boolean }> {
   const u = await getAuthUserWithPerms(event)
   if (!u) throw createError({ statusCode: 401, statusMessage: '未登录' })
+  // 管理员直通：与全局权限中间件保持一致，并避免 role_permissions 记录不全
+  // （如旧库迁移、新权限码尚未补齐）时 admin 被自己 403
+  if (u.isAdmin) return u
   if (!u.permissions.includes(code)) throw createError({ statusCode: 403, statusMessage: '无权限执行该操作' })
   return u
 }
