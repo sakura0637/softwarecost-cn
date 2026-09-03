@@ -20,6 +20,8 @@ const adminNavItems = [
   { label: '角色管理', to: '/admin/roles', module: 'admin-roles' },
   { label: '权限管理', to: '/admin/permissions', module: 'admin-permissions' },
   { label: '设备管理', to: '/admin/devices', module: 'devices', perm: 'devices:edit' },
+  // 统一数据维护后台（10 张表通用维护 + Excel 导入导出）；data 模块仅 admin 可见
+  { label: '数据维护', to: '/admin/data', module: 'data' },
 ]
 const visibleNav = computed(() => navItems.filter(i => !i.module || can(i.module + ':view')))
 const visibleAdminNav = computed(() => adminNavItems.filter(i => can(i.perm || `${i.module}:view`)))

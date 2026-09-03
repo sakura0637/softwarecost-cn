@@ -57,12 +57,14 @@ export const useAuth = () => {
     return $fetch(url, { ...options, headers })
   }
 
-  // 是否拥有某权限码（如 'standards:edit'）
-  const can = (code: string) => (permissions.value || []).includes(code)
   // 是否拥有某个角色编码
   const hasRole = (code: string) => (roles.value || []).includes(code)
-
   const isAdmin = computed(() => hasRole('admin') || (user.value?.role === 'admin'))
+
+  // 是否拥有某权限码（如 'standards:edit'）
+  // 管理员直通：与后端 requirePerm 的 isAdmin 短路保持一致，
+  // 避免新权限码尚未写进 role_permissions 时，admin 被自己的前端 UI 挡在门外（菜单/按钮不显示）。
+  const can = (code: string) => !!isAdmin.value || (permissions.value || []).includes(code)
 
   return { token, user, roles, permissions, isAdmin, can, hasRole, setSession, logout, me, api }
 }
