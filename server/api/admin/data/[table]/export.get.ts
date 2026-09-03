@@ -1,7 +1,7 @@
 // 数据维护：导出某表为 xlsx。GET → data:view
 import { setResponseHeader } from 'h3'
 import * as XLSX from 'xlsx'
-import { db } from '../../../../utils/db'
+import db from '../../../../utils/db'
 import { getColumns, assertTable } from '../../../../utils/adminData'
 
 function fmt(v: any, uiType: string): any {

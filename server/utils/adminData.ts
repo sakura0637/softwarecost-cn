@@ -1,6 +1,7 @@
 // 统一数据维护后端引擎：列内省 + 通用 CRUD + 类型校验 + 外键选项。
 // 所有 /api/admin/data/* 路由共用；权限由 server/middleware/permission.ts 统一收口。
 import db from './db'
+import { createError } from 'h3'   // 与 server/utils/auth.ts 一致：显式导入，不依赖 Nuxt 自动导入
 import { DATA_TABLES, DATA_CATEGORIES, getTableConf, labelFor, DataTableConf } from '../config/dataTables'
 
 export interface ColumnMeta {

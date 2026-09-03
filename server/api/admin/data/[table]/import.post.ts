@@ -4,7 +4,7 @@
 // POST → data:create
 import { readMultipartFormData } from 'h3'
 import * as XLSX from 'xlsx'
-import { db } from '../../../../utils/db'
+import db from '../../../../utils/db'
 import { getColumns, assertTable, getTableConf, validateBody, insertRow, updateRow } from '../../../../utils/adminData'
 
 function rowExists(table: string, pk: string, id: any): Promise<boolean> {
