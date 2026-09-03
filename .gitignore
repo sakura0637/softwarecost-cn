@@ -16,8 +16,8 @@ dist/
 .env.*
 !.env.example
 
-# Local SQLite database
-data/
+# Local SQLite database (root-level only; do NOT ignore nested dirs like server/api/admin/data/)
+/data/
 *.db
 *.sqlite
 *.sqlite3
