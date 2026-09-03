@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // 造价标准库页面：标准数据从数据库读取（/api/standards），失败回退静态数据
 // 参数明细（standard_parameters 从表）随标准一起返回，并在详情/编辑中合并展示与维护
-import { ref, computed, onMounted, reactive } from 'vue'
+import { ref, computed, onMounted, reactive, watch } from 'vue'
 import { standards as fallbackStandards, type CostStandard } from '~/composables/useStandards'
 import { useAuth } from '~/composables/useAuth'
 
@@ -163,26 +163,43 @@ const stats = computed(() => ({
 
 // ===== 管理标准（需登录） =====
 const showAdmin = ref(false)
-const editing = ref<CostStandard | null>(null) // 编辑中的标准；null 表示新增表单
+const editing = ref<CostStandard | null>(null) // 编辑中的标准对象（新增模式下为 null）
+const isNew = ref(false)                       // true=新增模式；false=编辑模式
+const saving = ref(false)                      // 保存标准中（此前漏声明，导致 saveStandard 抛 TypeError）
 const form = reactive({
   id: '', category: '', name: '', code: '', region: '', level: 'industry', org: '', summary: '',
 })
 
+// 是否处于表单态（新增或编辑）。
+// 注意：不能只靠 editing 判空——「新增」时 editing 恒为 null，
+// 若用 !editing 判断列表/表单，点「+ 新增标准」会一直停在列表、进不去表单。
+const inForm = computed(() => !!editing.value || isNew.value)
+
 function openNew() {
   editing.value = null
+  isNew.value = true
   Object.assign(form, { id: '', category: '', name: '', code: '', region: '', level: 'industry', org: '', summary: '' })
   paramRows.value = []
   paramDraft.value = null
+  valueRows.value = []
   showAdmin.value = true
 }
 function openEdit(s: CostStandard) {
   editing.value = s
+  isNew.value = false
   Object.assign(form, {
     id: s.id, category: s.category || '', name: s.name, code: s.code || '', region: s.region || '',
     level: s.level || 'industry', org: s.org || '', summary: s.summary || '',
   })
   loadParams(s.id)
   showAdmin.value = true
+}
+function backToList() {
+  editing.value = null
+  isNew.value = false
+  paramDraft.value = null
+  paramRows.value = []
+  valueRows.value = []
 }
 async function saveStandard() {
   if (!form.id.trim() || !form.name.trim()) { alert('id 与 name 必填'); return }
@@ -193,12 +210,22 @@ async function saveStandard() {
   }
   saving.value = true
   try {
-    if (editing.value) {
+    if (editing.value && !isNew.value) {
       await api(`/api/standards/${editing.value.id}`, { method: 'PUT', body })
     } else {
       await api('/api/standards', { method: 'POST', body })
     }
     await loadStandards()
+    // 新增保存成功后就地切为「编辑模式」，方便立刻继续维护该标准的参数
+    if (isNew.value) {
+      const justSaved = standards.value.find((s) => s.id === body.id)
+      if (justSaved) {
+        editing.value = justSaved
+        isNew.value = false
+        await loadParams(body.id)
+        return
+      }
+    }
     showAdmin.value = false
   } catch (e: any) {
     alert(e?.data?.statusMessage || '保存失败')
@@ -222,6 +249,15 @@ const paramRows = ref<any[]>([])
 const paramDraft = ref<any | null>(null) // 正在新增/编辑的参数草稿
 const savingParam = ref(false)
 
+// 取值改用结构化行编辑（不再手填 JSON），每行 { label, factor, desc }
+const valueRows = ref<any[]>([])
+function addValueRow() {
+  valueRows.value.push({ label: '', factor: '', desc: '' })
+}
+function removeValueRow(i: number) {
+  valueRows.value.splice(i, 1)
+}
+
 async function loadParams(stdId: string) {
   try {
     const res: any = await $fetch(`/api/standards/${stdId}/parameters`)
@@ -235,14 +271,61 @@ function groupParams(list: any[]) {
   for (const p of list) (map[p.paramCategory || '未分类'] ||= []).push(p)
   return Object.entries(map).map(([cat, items]) => ({ cat, items }))
 }
+// 把结构化取值行序列化成后端 standard_parameters.values 需要的 JSON 字符串
+function serializeValues() {
+  return JSON.stringify(
+    valueRows.value
+      .filter((r) => String(r.label ?? '').trim() !== '' || String(r.factor ?? '').trim() !== '')
+      .map((r) => {
+        const raw = String(r.factor ?? '').trim()
+        const num = Number(raw)
+        const item: any = {
+          label: String(r.label ?? '').trim(),
+          factor: raw !== '' && !Number.isNaN(num) ? num : raw,
+        }
+        const desc = String(r.desc ?? '').trim()
+        if (desc) item.desc = desc
+        return item
+      })
+  )
+}
+
 function startAddParam() {
-  paramDraft.value = { paramCategory: '', paramName: '', paramType: '', unit: '', values: '', description: '', seq: 0 }
+  const nextSeq = paramRows.value.length
+    ? Math.max(...paramRows.value.map((p: any) => Number(p.seq) || 0)) + 1
+    : 0
+  paramDraft.value = {
+    paramCategory: '', paramName: '', paramType: 'factor', unit: '', description: '', seq: nextSeq,
+  }
+  valueRows.value = []
 }
 function startEditParam(p: any) {
-  paramDraft.value = { ...p, values: typeof p.values === 'string' ? p.values : JSON.stringify(p.values ?? []) }
+  let vals: any[] = []
+  if (Array.isArray(p.values)) vals = p.values
+  else if (typeof p.values === 'string' && p.values.trim()) {
+    try {
+      const j = JSON.parse(p.values)
+      if (Array.isArray(j)) vals = j
+    } catch { vals = [] }
+  }
+  paramDraft.value = {
+    id: p.id,
+    paramCategory: p.paramCategory || '',
+    paramName: p.paramName || '',
+    paramType: p.paramType || 'factor',
+    unit: p.unit || '',
+    description: p.description || '',
+    seq: p.seq ?? 0,
+  }
+  valueRows.value = vals.map((v: any) => ({
+    label: v?.label ?? '',
+    factor: v?.factor ?? '',
+    desc: v?.desc ?? '',
+  }))
 }
 function cancelParam() {
   paramDraft.value = null
+  valueRows.value = []
 }
 async function saveParam() {
   if (!paramDraft.value || !paramDraft.value.paramName?.trim()) { alert('参数名必填'); return }
@@ -251,8 +334,13 @@ async function saveParam() {
   try {
     const d = paramDraft.value
     const body = {
-      param_category: d.paramCategory, param_name: d.paramName, param_type: d.paramType,
-      unit: d.unit, values: d.values, description: d.description, seq: d.seq,
+      param_category: d.paramCategory || '未分类',
+      param_name: d.paramName.trim(),
+      param_type: d.paramType,
+      unit: d.unit,
+      values: serializeValues(),
+      description: d.description || '',
+      seq: Number(d.seq) || 0,
     }
     if (d.id) {
       await api(`/api/standards/${editing.value.id}/parameters/${d.id}`, { method: 'PUT', body })
@@ -261,6 +349,7 @@ async function saveParam() {
     }
     await loadParams(editing.value.id)
     paramDraft.value = null
+    valueRows.value = []
   } catch (e: any) {
     alert(e?.data?.statusMessage || '保存参数失败')
   } finally {
@@ -288,6 +377,29 @@ const TYPE_LABEL: Record<string, string> = {
 }
 const fmtFactor = (v: number | string) =>
   typeof v === 'number' ? (Number.isInteger(v) ? String(v) : v.toFixed(v < 1 ? 4 : 2)) : v
+
+// 编辑表单用的类型下拉（避免界面上出现 weight/factor 这类英文代码）
+const TYPE_OPTIONS = [
+  { value: 'weight', label: '权重' },
+  { value: 'factor', label: '调整因子' },
+  { value: 'rate', label: '费率' },
+  { value: 'productivity', label: '生产率' },
+  { value: 'formula', label: '公式' },
+]
+
+// ===== 详情弹窗：左侧参数分类树 + 右侧选中参数明细 =====
+const activeParamId = ref<number | null>(null)
+const paramTree = computed(() => groupParams((selectedStandard.value?.parameters as any[]) || []))
+const activeParam = computed(() => {
+  const list: any[] = (selectedStandard.value?.parameters as any[]) || []
+  return list.find((p: any) => p.id === activeParamId.value) || null
+})
+// 打开某标准时默认选中它的第一个参数
+watch(selectedStandard, (std) => {
+  const list: any[] = (std?.parameters as any[]) || []
+  if (!list.length) { activeParamId.value = null; return }
+  if (!list.some((p: any) => p.id === activeParamId.value)) activeParamId.value = list[0].id
+})
 </script>
 
 <template>
@@ -402,7 +514,7 @@ const fmtFactor = (v: number | string) =>
           class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
           @click.self="selectedStandard = null"
         >
-          <div class="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-6 shadow-xl">
+          <div class="max-h-[85vh] w-full max-w-5xl overflow-y-auto rounded-2xl bg-white p-6 shadow-xl">
             <div class="mb-4 flex items-start justify-between">
               <div>
                 <span class="rounded-md bg-primary/10 px-2 py-1 text-xs font-medium text-primary">{{ selectedStandard.category }}</span>
@@ -422,41 +534,59 @@ const fmtFactor = (v: number | string) =>
               <div class="flex gap-3"><dt class="w-20 flex-shrink-0 text-gray-400">说明</dt><dd class="font-medium text-gray-700">{{ selectedStandard.summary }}</dd></div>
             </dl>
 
-            <!-- 参数明细（合并进标准，展示样式对齐旧 /parameters 页右侧明细表：表格 + 中文类型标签） -->
+            <!-- 参数明细：左侧参数分类树 + 右侧选中参数表格（对齐旧 /parameters 页左右结构） -->
             <div class="mt-4">
               <h4 class="mb-2 text-sm font-semibold text-gray-900">参数明细</h4>
-              <div v-if="selectedStandard.parameters && selectedStandard.parameters.length" class="space-y-4">
-                <div v-for="grp in groupParams(selectedStandard.parameters)" :key="grp.cat" class="rounded-lg bg-gray-50 p-4">
-                  <p class="mb-3 text-xs font-semibold text-primary">{{ grp.cat || '未分类' }}</p>
-                  <div class="space-y-5">
-                    <div v-for="p in grp.items" :key="p.id">
-                      <h5 class="text-base font-semibold text-gray-900">{{ p.paramName }}</h5>
-                      <p class="mt-1 text-xs text-gray-500">
-                        {{ TYPE_LABEL[p.paramType] || p.paramType }}<template v-if="p.unit"> · 单位：{{ p.unit }}</template>
-                      </p>
-                      <p v-if="p.description" class="mt-1 text-sm text-gray-600">{{ p.description }}</p>
-
-                      <div v-if="Array.isArray(p.values) && p.values.length" class="mt-2 overflow-x-auto">
-                        <table class="w-full text-left text-sm">
-                          <thead>
-                            <tr class="border-b border-gray-200 text-gray-500">
-                              <th class="py-2 pr-4 font-medium">因子项</th>
-                              <th class="py-2 pr-4 font-medium text-right">取值</th>
-                              <th class="py-2 pr-4 font-medium">说明</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            <tr v-for="(v, vi) in p.values" :key="vi" class="border-b border-gray-100 hover:bg-gray-50">
-                              <td class="py-2 pr-4 text-gray-800">{{ v.label }}</td>
-                              <td class="py-2 pr-4 text-right font-semibold text-primary">{{ fmtFactor(v.factor) }}</td>
-                              <td class="py-2 pr-4 text-xs text-gray-400">{{ v.desc || p.unit || '-' }}</td>
-                            </tr>
-                          </tbody>
-                        </table>
-                      </div>
-                      <p v-else-if="p.values && !Array.isArray(p.values)" class="mt-2 text-sm text-gray-500">{{ p.values }}</p>
-                    </div>
+              <div v-if="selectedStandard.parameters && selectedStandard.parameters.length" class="grid grid-cols-1 gap-4 lg:grid-cols-[220px_1fr]">
+                <!-- 左：参数分类树 -->
+                <div class="max-h-[44vh] overflow-y-auto rounded-lg bg-gray-50 p-3">
+                  <div v-for="grp in paramTree" :key="grp.cat" class="mb-4 last:mb-0">
+                    <div class="mb-1.5 text-xs font-semibold text-gray-700">{{ grp.cat }}</div>
+                    <ul class="space-y-0.5 border-l border-gray-200 pl-2">
+                      <li v-for="p in grp.items" :key="p.id">
+                        <button
+                          class="w-full rounded-md px-2 py-1.5 text-left text-xs transition-colors"
+                          :class="activeParamId === p.id ? 'bg-primary/10 font-medium text-primary' : 'text-gray-600 hover:bg-gray-100'"
+                          @click="activeParamId = p.id"
+                        >
+                          {{ p.paramName }}
+                        </button>
+                      </li>
+                    </ul>
                   </div>
+                </div>
+
+                <!-- 右：选中参数明细 -->
+                <div class="rounded-lg border border-gray-100 p-4">
+                  <template v-if="activeParam">
+                    <h5 class="text-base font-semibold text-gray-900">{{ activeParam.paramName }}</h5>
+                    <p class="mt-1 text-xs text-gray-500">
+                      {{ TYPE_LABEL[activeParam.paramType] || activeParam.paramType }}<template v-if="activeParam.unit"> · 单位：{{ activeParam.unit }}</template>
+                    </p>
+                    <p v-if="activeParam.description" class="mt-1 text-sm text-gray-600">{{ activeParam.description }}</p>
+
+                    <div v-if="Array.isArray(activeParam.values) && activeParam.values.length" class="mt-3 overflow-x-auto">
+                      <table class="w-full text-left text-sm">
+                        <thead>
+                          <tr class="border-b border-gray-200 text-gray-500">
+                            <th class="py-2 pr-4 font-medium">因子项</th>
+                            <th class="py-2 pr-4 font-medium text-right">取值</th>
+                            <th class="py-2 pr-4 font-medium">说明</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr v-for="(v, vi) in activeParam.values" :key="vi" class="border-b border-gray-100 hover:bg-gray-50">
+                            <td class="py-2 pr-4 text-gray-800">{{ v.label }}</td>
+                            <td class="py-2 pr-4 text-right font-semibold text-primary">{{ fmtFactor(v.factor) }}</td>
+                            <td class="py-2 pr-4 text-xs text-gray-400">{{ v.desc || activeParam.unit || '-' }}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <p v-else-if="activeParam.values && !Array.isArray(activeParam.values)" class="mt-2 text-sm text-gray-500">{{ activeParam.values }}</p>
+                    <p v-else class="mt-2 text-sm text-gray-400">该参数暂无取值明细</p>
+                  </template>
+                  <p v-else class="py-12 text-center text-sm text-gray-400">请从左侧选择参数</p>
                 </div>
               </div>
               <p v-else class="text-xs text-gray-400">该标准暂无参数明细</p>
@@ -571,17 +701,17 @@ const fmtFactor = (v: number | string) =>
           class="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4"
           @click.self="showAdmin = false"
         >
-          <div class="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl bg-white p-6 shadow-xl">
+          <div class="max-h-[90vh] w-full max-w-5xl overflow-y-auto rounded-2xl bg-white p-6 shadow-xl">
             <div class="mb-4 flex items-center justify-between">
               <h3 class="text-xl font-bold text-gray-900">管理标准（{{ standards.length }}）</h3>
               <div class="flex gap-2">
-                <button v-if="!editing && can('standards:create')" class="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700" @click="openNew">+ 新增标准</button>
+                <button v-if="!inForm && can('standards:create')" class="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700" @click="openNew">+ 新增标准</button>
                 <button class="text-gray-400 hover:text-gray-600" @click="showAdmin = false">✕</button>
               </div>
             </div>
 
             <!-- 列表 -->
-            <div v-if="!editing" class="space-y-2">
+            <div v-if="!inForm" class="space-y-2">
               <div
                 v-for="s in standards"
                 :key="s.id"
@@ -589,7 +719,7 @@ const fmtFactor = (v: number | string) =>
               >
                 <div class="min-w-0 flex-1">
                   <p class="truncate font-medium text-gray-800">{{ s.name }}</p>
-                  <p class="text-xs text-gray-400">{{ s.id }} · {{ s.category }} · {{ levelLabelMap[s.level] || s.level }}</p>
+                  <p class="text-xs text-gray-400">{{ s.category || '未分类' }} · {{ levelLabelMap[s.level] || s.level }}<template v-if="s.code"> · {{ s.code }}</template></p>
                 </div>
                 <button v-if="can('standards:edit')" class="shrink-0 text-xs text-blue-500 hover:underline" @click="openEdit(s)">编辑</button>
                 <button v-if="can('standards:delete')" class="shrink-0 text-xs text-red-500 hover:underline" @click="deleteStandard(s)">删除</button>
@@ -600,7 +730,7 @@ const fmtFactor = (v: number | string) =>
             <!-- 表单 -->
             <div v-else class="space-y-3">
               <div class="grid grid-cols-2 gap-3">
-                <label class="text-xs text-gray-500">标准 id<div class="mt-1"><input v-model="form.id" :disabled="!!editing" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" placeholder="如 hb-eb40" /></div></label>
+                <label class="text-xs text-gray-500">标准 id<div class="mt-1"><input v-model="form.id" :disabled="!isNew" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" placeholder="如 hb-eb40" /></div></label>
                 <label class="text-xs text-gray-500">名称<div class="mt-1"><input v-model="form.name" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" /></div></label>
                 <label class="text-xs text-gray-500">类别<div class="mt-1"><input v-model="form.category" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" placeholder="软件开发" /></div></label>
                 <label class="text-xs text-gray-500">编号<div class="mt-1"><input v-model="form.code" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" placeholder="DB13/T 2106" /></div></label>
@@ -618,47 +748,93 @@ const fmtFactor = (v: number | string) =>
               </div>
               <label class="block text-xs text-gray-500">说明<div class="mt-1"><textarea v-model="form.summary" rows="2" class="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"></textarea></div></label>
 
-              <!-- 参数明细编辑器（合并进标准） -->
+              <!-- 参数明细编辑器：左侧参数树 + 右侧编辑表单 -->
               <div class="block rounded-lg border border-gray-100 bg-gray-50/50 p-3">
                 <div class="flex items-center justify-between">
                   <span class="text-xs text-gray-500">参数明细（{{ paramRows.length }} 条）</span>
-                  <button type="button" class="text-xs text-primary hover:underline" :disabled="!editing || !!paramDraft" @click="startAddParam">+ 添加参数</button>
+                  <button type="button" class="text-xs text-primary hover:underline" @click="startAddParam">+ 添加参数</button>
                 </div>
-                <p v-if="!editing" class="mt-2 text-xs text-gray-400">先保存标准，再回来编辑即可添加参数</p>
-                <template v-else>
-                  <div v-for="p in paramRows" :key="p.id" class="mt-2 flex items-center justify-between gap-2 rounded-lg bg-gray-50 px-3 py-2 text-sm">
-                    <div class="min-w-0">
-                      <p class="truncate font-medium text-gray-800">{{ p.paramName }}</p>
-                      <p class="text-xs text-gray-400">{{ p.paramCategory || '未分类' }} · {{ p.paramType }}{{ p.unit ? ' · ' + p.unit : '' }}</p>
-                    </div>
-                    <div class="flex shrink-0 gap-2">
-                      <button class="text-xs text-blue-500 hover:underline" :disabled="!!paramDraft" @click="startEditParam(p)">编辑</button>
-                      <button class="text-xs text-red-500 hover:underline" :disabled="!!paramDraft" @click="removeParam(p)">删除</button>
+                <p v-if="isNew" class="mt-2 text-xs text-gray-400">先创建标准，创建后即可在此维护它的参数</p>
+                <div v-else class="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-[200px_1fr]">
+                  <!-- 左：参数列表（按分类分组） -->
+                  <div class="max-h-[38vh] overflow-y-auto rounded-lg bg-white p-2">
+                    <p v-if="!paramRows.length" class="px-1 py-6 text-center text-xs text-gray-400">暂无参数</p>
+                    <div v-for="grp in groupParams(paramRows)" :key="grp.cat" class="mb-3 last:mb-0">
+                      <div class="mb-1 px-1 text-xs font-semibold text-gray-700">{{ grp.cat }}</div>
+                      <ul class="space-y-0.5 border-l border-gray-200 pl-1">
+                        <li v-for="p in grp.items" :key="p.id">
+                          <div class="flex items-center gap-1">
+                            <button
+                              class="min-w-0 flex-1 truncate rounded-md px-2 py-1.5 text-left text-xs transition-colors"
+                              :class="paramDraft && paramDraft.id === p.id ? 'bg-primary/10 font-medium text-primary' : 'text-gray-600 hover:bg-gray-100'"
+                              :title="p.paramName"
+                              @click="startEditParam(p)"
+                            >
+                              {{ p.paramName }}
+                            </button>
+                            <button class="shrink-0 rounded px-1 text-xs text-gray-300 hover:text-red-500" title="删除" @click="removeParam(p)">✕</button>
+                          </div>
+                        </li>
+                      </ul>
                     </div>
                   </div>
-                  <p v-if="paramRows.length === 0" class="mt-2 text-xs text-gray-400">暂无参数</p>
-                </template>
 
-                <!-- 参数草稿表单 -->
-                <div v-if="paramDraft" class="mt-3 space-y-2 rounded-lg border border-gray-200 p-3">
-                  <div class="grid grid-cols-2 gap-2">
-                    <input v-model="paramDraft.paramCategory" class="rounded-lg border border-gray-200 px-2 py-1.5 text-sm" placeholder="分类（如 规模度量-功能点相关）" />
-                    <input v-model="paramDraft.paramName" class="rounded-lg border border-gray-200 px-2 py-1.5 text-sm" placeholder="参数名（必填）" />
-                    <input v-model="paramDraft.paramType" class="rounded-lg border border-gray-200 px-2 py-1.5 text-sm" placeholder="类型（weight/factor/rate…）" />
-                    <input v-model="paramDraft.unit" class="rounded-lg border border-gray-200 px-2 py-1.5 text-sm" placeholder="单位（如 人月/元）" />
-                  </div>
-                  <textarea v-model="paramDraft.description" rows="2" class="w-full rounded-lg border border-gray-200 px-2 py-1.5 text-sm" placeholder="说明"></textarea>
-                  <textarea v-model="paramDraft.values" rows="2" class="w-full rounded-lg border border-gray-200 px-2 py-1.5 text-sm" placeholder='取值 JSON，如 [{"label":"高","factor":0.3333}]'></textarea>
-                  <div class="flex justify-end gap-2">
-                    <button class="rounded-lg px-3 py-1.5 text-sm text-gray-500 hover:bg-gray-100" :disabled="savingParam" @click="cancelParam">取消</button>
-                    <button :disabled="savingParam" class="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50" @click="saveParam">{{ savingParam ? '保存中…' : '保存参数' }}</button>
+                  <!-- 右：参数编辑表单 -->
+                  <div class="rounded-lg bg-white p-3">
+                    <template v-if="paramDraft">
+                      <p class="mb-2 text-xs font-semibold text-gray-700">{{ paramDraft.id ? '编辑参数' : '新增参数' }}</p>
+                      <div class="grid grid-cols-2 gap-2">
+                        <label class="text-xs text-gray-500">分类<div class="mt-1"><input v-model="paramDraft.paramCategory" class="w-full rounded-lg border border-gray-200 px-2 py-1.5 text-sm" placeholder="如 规模度量-功能点相关" /></div></label>
+                        <label class="text-xs text-gray-500">参数名（必填）<div class="mt-1"><input v-model="paramDraft.paramName" class="w-full rounded-lg border border-gray-200 px-2 py-1.5 text-sm" placeholder="如 功能点取值（UFP权重）" /></div></label>
+                        <label class="text-xs text-gray-500">类型<div class="mt-1">
+                          <select v-model="paramDraft.paramType" class="w-full rounded-lg border border-gray-200 px-2 py-1.5 text-sm">
+                            <option v-for="t in TYPE_OPTIONS" :key="t.value" :value="t.value">{{ t.label }}</option>
+                          </select>
+                        </div></label>
+                        <label class="text-xs text-gray-500">单位<div class="mt-1"><input v-model="paramDraft.unit" class="w-full rounded-lg border border-gray-200 px-2 py-1.5 text-sm" placeholder="如 人月 / 元" /></div></label>
+                      </div>
+                      <label class="mt-2 block text-xs text-gray-500">说明<div class="mt-1"><textarea v-model="paramDraft.description" rows="2" class="w-full rounded-lg border border-gray-200 px-2 py-1.5 text-sm" placeholder="选填"></textarea></div></label>
+
+                      <!-- 取值：结构化行编辑（不再手填 JSON） -->
+                      <div class="mt-2">
+                        <div class="flex items-center justify-between">
+                          <span class="text-xs text-gray-500">取值项</span>
+                          <button type="button" class="text-xs text-primary hover:underline" @click="addValueRow">+ 添加一行</button>
+                        </div>
+                        <table v-if="valueRows.length" class="mt-1 w-full text-left text-xs">
+                          <thead>
+                            <tr class="text-gray-400">
+                              <th class="py-1 pr-2 font-medium">因子项</th>
+                              <th class="py-1 pr-2 font-medium">取值</th>
+                              <th class="py-1 pr-2 font-medium">说明</th>
+                              <th class="w-8"></th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr v-for="(r, ri) in valueRows" :key="ri">
+                              <td class="py-1 pr-2"><input v-model="r.label" class="w-full rounded border border-gray-200 px-1.5 py-1" placeholder="如 ILF(低)" /></td>
+                              <td class="py-1 pr-2"><input v-model="r.factor" class="w-full rounded border border-gray-200 px-1.5 py-1" placeholder="7" /></td>
+                              <td class="py-1 pr-2"><input v-model="r.desc" class="w-full rounded border border-gray-200 px-1.5 py-1" placeholder="选填" /></td>
+                              <td class="py-1"><button type="button" class="text-gray-300 hover:text-red-500" @click="removeValueRow(ri)">✕</button></td>
+                            </tr>
+                          </tbody>
+                        </table>
+                        <p v-else class="mt-1 text-xs text-gray-400">暂无取值项，点「+ 添加一行」新增</p>
+                      </div>
+
+                      <div class="mt-3 flex justify-end gap-2">
+                        <button class="rounded-lg px-3 py-1.5 text-sm text-gray-500 hover:bg-gray-100" :disabled="savingParam" @click="cancelParam">取消</button>
+                        <button :disabled="savingParam" class="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50" @click="saveParam">{{ savingParam ? '保存中…' : '保存参数' }}</button>
+                      </div>
+                    </template>
+                    <p v-else class="py-12 text-center text-xs text-gray-400">从左侧点选参数进行编辑，或点「+ 添加参数」新建</p>
                   </div>
                 </div>
               </div>
 
               <div class="flex justify-end gap-2 pt-2">
-                <button class="rounded-lg px-3 py-1.5 text-sm text-gray-500 hover:bg-gray-100" @click="editing = null">返回列表</button>
-                <button :disabled="saving" class="rounded-lg bg-primary px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50" @click="saveStandard">{{ saving ? '保存中…' : '保存' }}</button>
+                <button class="rounded-lg px-3 py-1.5 text-sm text-gray-500 hover:bg-gray-100" @click="backToList">返回列表</button>
+                <button :disabled="saving" class="rounded-lg bg-primary px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50" @click="saveStandard">{{ saving ? '保存中…' : (isNew ? '创建标准' : '保存') }}</button>
               </div>
             </div>
           </div>
