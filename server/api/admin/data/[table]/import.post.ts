@@ -5,7 +5,9 @@
 import { readMultipartFormData } from 'h3'
 import * as XLSX from 'xlsx'
 import db from '../../../../utils/db'
-import { getColumns, assertTable, getTableConf, validateBody, insertRow, updateRow } from '../../../../utils/adminData'
+import { getColumns, assertTable, validateBody, insertRow, updateRow } from '../../../../utils/adminData'
+// getTableConf 定义在 config/dataTables.ts，不在 utils/adminData.ts（Rollup 会报 MISSING_EXPORT）
+import { getTableConf } from '../../../../config/dataTables'
 
 function rowExists(table: string, pk: string, id: any): Promise<boolean> {
   return db
