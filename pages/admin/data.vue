@@ -95,7 +95,13 @@ function displayVal(col: ColMeta, val: any): string {
     return n ? `共 ${n} 项` : '—'
   }
   if (col.uiType === 'date') return String(val).replace('T', ' ').slice(0, 16)
-  return String(val)
+  const s = String(val)
+  // 兜底：文本列里存的 JSON 内容同样只显示摘要（防止配置漏标 json 的列露出原文）
+  if (/^[[{]/.test(s.trim())) {
+    const n = jsonCount(s)
+    if (n) return `共 ${n} 项`
+  }
+  return s
 }
 
 // ── 行内编辑 ──

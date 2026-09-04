@@ -33,6 +33,7 @@ export const DATA_TABLES: DataTableConf[] = [
     pk: 'id',
     pkAuto: false,
     readonly: ['params', 'param_values', 'source'],
+    json: ['params', 'param_values'],
   },
   {
     key: 'standard_parameters',
@@ -51,7 +52,7 @@ export const DATA_TABLES: DataTableConf[] = [
     pk: 'id',
     pkAuto: true,
     readonly: ['created_at', 'updated_at'],
-    json: ['ufp_weights', 'reuse_factors', 'adjustment_factors'],
+    json: ['ufp_weights', 'reuse_factors', 'cf', 'pdr', 'adjustment_factors'],
     fk: { standard_id: { table: 'standards', label: 'name' } },
   },
   // ── 设备价格库三表不在本后台维护（2026-09-03 下线）──
@@ -85,7 +86,7 @@ export const DATA_TABLES: DataTableConf[] = [
     pk: 'id',
     pkAuto: false,
     readonly: ['created_at'],
-    json: ['ufp_weights', 'reuse_factors', 'adjustment_factors'],
+    json: ['ufp_weights', 'reuse_factors', 'cf', 'pdr', 'adjustment_factors'],
   },
   {
     key: 'estimation_parameters',
@@ -112,6 +113,8 @@ export const DATA_LABELS: Record<string, string> = {
   'standards.is_enabled': '启用',
   'standards.edition': '版次',
   'standards.effective_date': '实施日期',
+  'standards.params': '参数',
+  'standards.param_values': '参数取值',
   'standards.source': '来源',
   'standard_parameters.standard_id': '所属标准',
   'standard_parameters.param_category': '参数分类',
