@@ -20,10 +20,12 @@ const page = ref(1)
 const pageSize = ref(50)
 const loading = ref(false)
 
-const editingId = ref<any>(null)
-const editCopy = reactive<any>({})
-const adding = ref(false)
-const addCopy = reactive<any>({})
+// ── 新增/编辑弹窗 ──
+const showForm = ref(false)
+const formMode = ref<'add' | 'edit'>('add')
+const formCopy = reactive<any>({})
+const editingPk = ref<any>(null)
+const savingForm = ref(false)
 
 const showImport = ref(false)
 const importFile = ref<File | null>(null)
@@ -61,8 +63,7 @@ async function loadTable() {
     rows.value = r.rows
     fkOptions.value = r.fkOptions || {}
     total.value = r.total
-    editingId.value = null
-    adding.value = false
+    showForm.value = false
   } finally {
     loading.value = false
   }
@@ -104,22 +105,68 @@ function displayVal(col: ColMeta, val: any): string {
   return s
 }
 
-// ── 行内编辑 ──
-function startEdit(row: any) {
-  editingId.value = row[primaryKey.value]
-  Object.keys(editCopy).forEach((k) => delete editCopy[k])
-  for (const c of columns.value) if (!c.readonly) editCopy[c.name] = row[c.name] ?? ''
+// ── 新增/编辑（弹窗表单，替代原行内编辑）──
+const editableColumns = computed(() => columns.value.filter((c) => !c.readonly))
+const formTitle = computed(() => {
+  const t = tables.value.find((x) => x.key === activeTable.value)?.label || ''
+  return (formMode.value === 'add' ? '新增' : '编辑') + ' · ' + t
+})
+// JSON 字段实时校验：字段名 → 格式是否错误
+const jsonErrors = computed(() => {
+  const errs: Record<string, boolean> = {}
+  for (const c of editableColumns.value) {
+    if (c.uiType !== 'json') continue
+    const v = formCopy[c.name]
+    if (v == null || String(v).trim() === '') continue
+    try { JSON.parse(String(v)) } catch { errs[c.name] = true }
+  }
+  return errs
+})
+// 宽字段（表单里占整行）：JSON 配置、长文本说明
+function isWide(c: ColMeta): boolean {
+  return c.uiType === 'json' || (c.uiType === 'text' && ['summary', 'description', 'remark', 'note'].includes(c.name))
 }
-function cancelEdit() {
-  editingId.value = null
-}
-async function saveEdit() {
+function fmtJson(name: string) {
+  const v = formCopy[name]
+  if (v == null || String(v).trim() === '') return
   try {
-    await api(`/api/admin/data/${activeTable.value}/${editingId.value}`, { method: 'PUT', body: { ...editCopy } })
-    editingId.value = null
+    formCopy[name] = JSON.stringify(JSON.parse(String(v)), null, 2)
+  } catch {
+    alert('内容不是有效的 JSON，无法格式化')
+  }
+}
+function openAdd() {
+  formMode.value = 'add'
+  editingPk.value = null
+  Object.keys(formCopy).forEach((k) => delete formCopy[k])
+  for (const c of editableColumns.value) formCopy[c.name] = c.uiType === 'boolean' ? false : ''
+  showForm.value = true
+}
+function openEdit(row: any) {
+  formMode.value = 'edit'
+  editingPk.value = row[primaryKey.value]
+  Object.keys(formCopy).forEach((k) => delete formCopy[k])
+  for (const c of editableColumns.value) formCopy[c.name] = row[c.name] ?? ''
+  showForm.value = true
+}
+function cancelForm() {
+  showForm.value = false
+}
+async function saveForm() {
+  if (Object.keys(jsonErrors.value).length) return alert('部分配置内容不是有效的 JSON，请修正后再保存')
+  savingForm.value = true
+  try {
+    if (formMode.value === 'add') {
+      await api(`/api/admin/data/${activeTable.value}`, { method: 'POST', body: { ...formCopy } })
+    } else {
+      await api(`/api/admin/data/${activeTable.value}/${editingPk.value}`, { method: 'PUT', body: { ...formCopy } })
+    }
+    showForm.value = false
     await loadTable()
   } catch (e: any) {
     alert(e?.data?.statusMessage || '保存失败')
+  } finally {
+    savingForm.value = false
   }
 }
 async function removeRow(row: any) {
@@ -133,25 +180,6 @@ async function removeRow(row: any) {
 }
 
 const primaryKey = computed(() => columns.value.find((c) => c.isPk)?.name || 'id')
-
-// ── 新增行 ──
-function startAdd() {
-  adding.value = true
-  Object.keys(addCopy).forEach((k) => delete addCopy[k])
-  for (const c of columns.value) if (!c.readonly) addCopy[c.name] = c.uiType === 'boolean' ? false : ''
-}
-function cancelAdd() {
-  adding.value = false
-}
-async function saveAdd() {
-  try {
-    await api(`/api/admin/data/${activeTable.value}`, { method: 'POST', body: { ...addCopy } })
-    adding.value = false
-    await loadTable()
-  } catch (e: any) {
-    alert(e?.data?.statusMessage || '新增失败')
-  }
-}
 
 // ── 导出 ──
 async function exportXlsx() {
@@ -239,7 +267,7 @@ onMounted(loadMeta)
         <template v-else>
           <div class="mb-3 flex flex-wrap items-center gap-2">
             <h2 class="mr-2 text-lg font-semibold text-gray-900">{{ tables.find((t) => t.key === activeTable)?.label }}</h2>
-            <button v-if="can('data:create')" class="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700" @click="startAdd">+ 新增</button>
+            <button v-if="can('data:create')" class="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700" @click="openAdd">+ 新增</button>
             <button class="rounded-lg border border-gray-200 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50" @click="exportXlsx">导出 Excel</button>
             <button v-if="can('data:create')" class="rounded-lg border border-gray-200 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50" @click="showImport = true">导入 Excel</button>
             <span class="ml-auto text-xs text-gray-400">共 {{ total }} 条 · 第 {{ page }}/{{ totalPages }} 页</span>
@@ -256,63 +284,25 @@ onMounted(loadMeta)
                 </tr>
               </thead>
               <tbody>
-                <!-- 新增行 -->
-                <tr v-if="adding" class="bg-blue-50/40">
-                  <td v-for="c in columns" :key="c.name" class="px-2 py-1.5 align-top">
-                    <span v-if="c.readonly" class="text-gray-300">—</span>
-                    <select v-else-if="c.isFk" v-model="addCopy[c.name]" class="w-full rounded border border-gray-200 px-1 py-1 text-xs">
-                      <option value="">（未选）</option>
-                      <option v-for="o in (fkOptions[c.name] || [])" :key="o.value" :value="o.value">{{ o.label }}</option>
-                    </select>
-                    <textarea v-else-if="c.uiType === 'json'" v-model="addCopy[c.name]" rows="3" class="w-full rounded border border-gray-200 px-1 py-1 text-xs font-mono" placeholder='按 {"名称": 值} 格式填写'></textarea>
-                    <input v-else-if="c.uiType === 'boolean'" type="checkbox" v-model="addCopy[c.name]" />
-                    <input v-else v-model="addCopy[c.name]" :type="c.uiType === 'number' ? 'number' : (c.uiType === 'date' ? 'date' : 'text')" class="w-full rounded border border-gray-200 px-1 py-1 text-xs" />
-                  </td>
-                    <td v-if="can('data:edit') || can('data:delete')" class="whitespace-nowrap px-2 py-1.5">
-                      <button class="text-xs text-primary hover:underline" @click="saveAdd">保存</button>
-                      <button class="ml-2 text-xs text-gray-400 hover:underline" @click="cancelAdd">取消</button>
-                    </td>
-                </tr>
-
                 <!-- 数据行 -->
                 <tr v-for="row in rows" :key="row[primaryKey]" class="border-t border-gray-100 bg-white hover:bg-gray-50">
-                  <!-- 编辑态 -->
-                  <template v-if="editingId === row[primaryKey]">
-                    <td v-for="c in columns" :key="c.name" class="px-2 py-1.5 align-top">
-                      <span v-if="c.readonly" class="text-gray-400">{{ displayVal(c, row[c.name]) }}</span>
-                      <select v-else-if="c.isFk" v-model="editCopy[c.name]" class="w-full rounded border border-gray-200 px-1 py-1 text-xs">
-                        <option value="">（未选）</option>
-                        <option v-for="o in (fkOptions[c.name] || [])" :key="o.value" :value="o.value">{{ o.label }}</option>
-                      </select>
-                      <textarea v-else-if="c.uiType === 'json'" v-model="editCopy[c.name]" rows="3" class="w-full rounded border border-gray-200 px-1 py-1 text-xs font-mono"></textarea>
-                      <input v-else-if="c.uiType === 'boolean'" type="checkbox" v-model="editCopy[c.name]" />
-                      <input v-else v-model="editCopy[c.name]" :type="c.uiType === 'number' ? 'number' : (c.uiType === 'date' ? 'date' : 'text')" class="w-full rounded border border-gray-200 px-1 py-1 text-xs" />
-                    </td>
-                    <td v-if="can('data:edit') || can('data:delete')" class="whitespace-nowrap px-2 py-1.5">
-                      <button class="text-xs text-primary hover:underline" @click="saveEdit">保存</button>
-                      <button class="ml-2 text-xs text-gray-400 hover:underline" @click="cancelEdit">取消</button>
-                    </td>
-                  </template>
-                  <!-- 展示态 -->
-                  <template v-else>
-                    <td v-for="c in columns" :key="c.name" class="px-3 py-2 align-top">
-                      <span v-if="c.isFk" class="block max-w-[180px] truncate" :title="fkLabel(c.name, row[c.name])">{{ fkLabel(c.name, row[c.name]) }}</span>
-                      <span
-                        v-else-if="c.uiType === 'json'"
-                        class="block max-w-[110px] truncate rounded bg-gray-50 px-1.5 py-0.5 text-center text-xs text-gray-500"
-                        title="查看和修改配置明细请点「编辑」"
-                      >{{ displayVal(c, row[c.name]) }}</span>
-                      <span v-else class="block max-w-[240px] truncate" :title="displayVal(c, row[c.name])">{{ displayVal(c, row[c.name]) }}</span>
-                    </td>
-                    <td v-if="can('data:edit') || can('data:delete')" class="sticky right-0 bg-inherit px-3 py-2 whitespace-nowrap">
-                      <button v-if="can('data:edit')" class="text-xs text-blue-500 hover:underline" @click="startEdit(row)">编辑</button>
-                      <button v-if="can('data:delete')" class="ml-2 text-xs text-red-500 hover:underline" @click="removeRow(row)">删除</button>
-                    </td>
-                  </template>
+                  <td v-for="c in columns" :key="c.name" class="px-3 py-2 align-top">
+                    <span v-if="c.isFk" class="block max-w-[180px] truncate" :title="fkLabel(c.name, row[c.name])">{{ fkLabel(c.name, row[c.name]) }}</span>
+                    <span
+                      v-else-if="c.uiType === 'json'"
+                      class="block max-w-[110px] truncate rounded bg-gray-50 px-1.5 py-0.5 text-center text-xs text-gray-500"
+                      title="查看和修改配置明细请点「编辑」"
+                    >{{ displayVal(c, row[c.name]) }}</span>
+                    <span v-else class="block max-w-[240px] truncate" :title="displayVal(c, row[c.name])">{{ displayVal(c, row[c.name]) }}</span>
+                  </td>
+                  <td v-if="can('data:edit') || can('data:delete')" class="sticky right-0 bg-inherit px-3 py-2 whitespace-nowrap">
+                    <button v-if="can('data:edit')" class="text-xs text-blue-500 hover:underline" @click="openEdit(row)">编辑</button>
+                    <button v-if="can('data:delete')" class="ml-2 text-xs text-red-500 hover:underline" @click="removeRow(row)">删除</button>
+                  </td>
                 </tr>
 
                 <!-- 空数据提示 -->
-                <tr v-if="!rows.length && !adding">
+                <tr v-if="!rows.length">
                   <td :colspan="columns.length + 1" class="px-3 py-12 text-center text-sm text-gray-400">暂无数据，点右上角「+ 新增」或「导入 Excel」开始维护</td>
                 </tr>
               </tbody>
@@ -349,6 +339,42 @@ onMounted(loadMeta)
         </div>
 
         <button class="mt-3 text-sm text-gray-400 hover:underline" @click="showImport = false">关闭</button>
+      </div>
+    </div>
+
+    <!-- 新增/编辑弹窗 -->
+    <div v-if="showForm" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" @click.self="cancelForm">
+      <div class="max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-6 shadow-xl">
+        <h3 class="mb-4 text-lg font-bold text-gray-900">{{ formTitle }}</h3>
+        <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <div v-for="c in editableColumns" :key="c.name" :class="isWide(c) ? 'md:col-span-2' : ''">
+            <label class="mb-1 flex items-center justify-between text-xs font-medium text-gray-500">
+              <span>{{ c.label }}<span v-if="!c.nullable" class="ml-0.5 text-red-400">*</span></span>
+              <button v-if="c.uiType === 'json'" type="button" class="text-blue-500 hover:underline" @click="fmtJson(c.name)">格式化</button>
+            </label>
+            <select v-if="c.isFk" v-model="formCopy[c.name]" class="w-full rounded-lg border border-gray-200 px-2 py-1.5 text-sm">
+              <option value="">（未选）</option>
+              <option v-for="o in (fkOptions[c.name] || [])" :key="o.value" :value="o.value">{{ o.label }}</option>
+            </select>
+            <textarea
+              v-else-if="c.uiType === 'json'"
+              v-model="formCopy[c.name]"
+              rows="6"
+              class="w-full rounded-lg border px-2 py-1.5 text-sm font-mono"
+              :class="jsonErrors[c.name] ? 'border-red-400' : 'border-gray-200'"
+              placeholder='按 {"名称": 值} 格式填写'
+            ></textarea>
+            <label v-else-if="c.uiType === 'boolean'" class="flex items-center gap-2 text-sm text-gray-700">
+              <input type="checkbox" v-model="formCopy[c.name]" /> {{ formCopy[c.name] ? '是' : '否' }}
+            </label>
+            <input v-else v-model="formCopy[c.name]" :type="c.uiType === 'number' ? 'number' : (c.uiType === 'date' ? 'date' : 'text')" class="w-full rounded-lg border border-gray-200 px-2 py-1.5 text-sm" />
+            <p v-if="jsonErrors[c.name]" class="mt-1 text-xs text-red-500">内容不是有效的 JSON，请检查格式</p>
+          </div>
+        </div>
+        <div class="mt-5 flex justify-end gap-2">
+          <button class="rounded-lg border border-gray-200 px-4 py-1.5 text-sm text-gray-600 hover:bg-gray-50" @click="cancelForm">取消</button>
+          <button class="rounded-lg bg-primary px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50" :disabled="savingForm" @click="saveForm">{{ savingForm ? '保存中…' : '保存' }}</button>
+        </div>
       </div>
     </div>
   </div>
