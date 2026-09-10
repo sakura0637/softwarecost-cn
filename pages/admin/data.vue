@@ -111,7 +111,7 @@ const formTitle = computed(() => {
   const t = tables.value.find((x) => x.key === activeTable.value)?.label || ''
   return (formMode.value === 'add' ? '新增' : '编辑') + ' · ' + t
 })
-// JSON 字段实时校验：字段名 → 格式是否错误
+// JSON 字段校验：结构化编辑器输出的都是合法 JSON；只有「复杂结构回退到文本」时才可能填错，这里兜底拦一道
 const jsonErrors = computed(() => {
   const errs: Record<string, boolean> = {}
   for (const c of editableColumns.value) {
@@ -126,15 +126,6 @@ const jsonErrors = computed(() => {
 function isWide(c: ColMeta): boolean {
   return c.uiType === 'json' || (c.uiType === 'text' && ['summary', 'description', 'remark', 'note'].includes(c.name))
 }
-function fmtJson(name: string) {
-  const v = formCopy[name]
-  if (v == null || String(v).trim() === '') return
-  try {
-    formCopy[name] = JSON.stringify(JSON.parse(String(v)), null, 2)
-  } catch {
-    alert('内容不是有效的 JSON，无法格式化')
-  }
-}
 function openAdd() {
   formMode.value = 'add'
   editingPk.value = null
@@ -146,14 +137,18 @@ function openEdit(row: any) {
   formMode.value = 'edit'
   editingPk.value = row[primaryKey.value]
   Object.keys(formCopy).forEach((k) => delete formCopy[k])
-  for (const c of editableColumns.value) formCopy[c.name] = row[c.name] ?? ''
+  for (const c of editableColumns.value) {
+    const v = row[c.name] ?? ''
+    // jsonb 列取回来是对象，结构化编辑器收字符串，先转成 JSON 文本
+    formCopy[c.name] = c.uiType === 'json' && v && typeof v === 'object' ? JSON.stringify(v) : v
+  }
   showForm.value = true
 }
 function cancelForm() {
   showForm.value = false
 }
 async function saveForm() {
-  if (Object.keys(jsonErrors.value).length) return alert('部分配置内容不是有效的 JSON，请修正后再保存')
+  if (Object.keys(jsonErrors.value).length) return alert('部分配置内容格式有误，请修正后再保存')
   savingForm.value = true
   try {
     if (formMode.value === 'add') {
@@ -348,27 +343,20 @@ onMounted(loadMeta)
         <h3 class="mb-4 text-lg font-bold text-gray-900">{{ formTitle }}</h3>
         <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
           <div v-for="c in editableColumns" :key="c.name" :class="isWide(c) ? 'md:col-span-2' : ''">
-            <label class="mb-1 flex items-center justify-between text-xs font-medium text-gray-500">
-              <span>{{ c.label }}<span v-if="!c.nullable" class="ml-0.5 text-red-400">*</span></span>
-              <button v-if="c.uiType === 'json'" type="button" class="text-blue-500 hover:underline" @click="fmtJson(c.name)">格式化</button>
+            <label class="mb-1 block text-xs font-medium text-gray-500">
+              {{ c.label }}<span v-if="!c.nullable" class="ml-0.5 text-red-400">*</span>
             </label>
             <select v-if="c.isFk" v-model="formCopy[c.name]" class="w-full rounded-lg border border-gray-200 px-2 py-1.5 text-sm">
               <option value="">（未选）</option>
               <option v-for="o in (fkOptions[c.name] || [])" :key="o.value" :value="o.value">{{ o.label }}</option>
             </select>
-            <textarea
-              v-else-if="c.uiType === 'json'"
-              v-model="formCopy[c.name]"
-              rows="6"
-              class="w-full rounded-lg border px-2 py-1.5 text-sm font-mono"
-              :class="jsonErrors[c.name] ? 'border-red-400' : 'border-gray-200'"
-              placeholder='按 {"名称": 值} 格式填写'
-            ></textarea>
+            <!-- JSON 配置：结构化行编辑，页面不出现 JSON 原文 -->
+            <JsonFieldEditor v-else-if="c.uiType === 'json'" v-model="formCopy[c.name]" />
             <label v-else-if="c.uiType === 'boolean'" class="flex items-center gap-2 text-sm text-gray-700">
               <input type="checkbox" v-model="formCopy[c.name]" /> {{ formCopy[c.name] ? '是' : '否' }}
             </label>
             <input v-else v-model="formCopy[c.name]" :type="c.uiType === 'number' ? 'number' : (c.uiType === 'date' ? 'date' : 'text')" class="w-full rounded-lg border border-gray-200 px-2 py-1.5 text-sm" />
-            <p v-if="jsonErrors[c.name]" class="mt-1 text-xs text-red-500">内容不是有效的 JSON，请检查格式</p>
+            <p v-if="jsonErrors[c.name]" class="mt-1 text-xs text-red-500">内容格式有误，请修正后再保存</p>
           </div>
         </div>
         <div class="mt-5 flex justify-end gap-2">

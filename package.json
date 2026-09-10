@@ -8,7 +8,9 @@
     "generate": "nuxt generate",
     "preview": "nuxt preview",
     "check:perm": "node scripts/check_permissions.mjs",
-    "check:imports": "node scripts/check_imports.mjs server"
+    "check:imports": "node scripts/check_imports.mjs server",
+    "check:vue": "node scripts/check_vue.mjs",
+    "check": "npm run check:imports && npm run check:vue && npm run check:perm"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
