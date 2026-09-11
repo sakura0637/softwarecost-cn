@@ -335,7 +335,7 @@ function gotoPage(event: Event) {
       </p>
 
       <div class="overflow-hidden rounded-xl bg-white shadow-card">
-        <div class="max-h-[60vh] min-h-[320px] overflow-auto">
+        <div class="table-scroll min-h-[320px]">
           <table class="w-full min-w-[980px] text-left text-sm">
           <thead class="bg-gray-50 text-xs uppercase text-gray-500">
             <tr>

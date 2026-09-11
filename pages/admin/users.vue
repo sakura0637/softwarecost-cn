@@ -111,9 +111,9 @@ const canDelete = computed(() => can('admin-users:delete'))
           <span class="text-sm text-gray-500">共 {{ users.length }} 个用户</span>
           <button v-if="canCreate" class="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700" @click="openNew">+ 新增用户</button>
         </div>
-        <div class="overflow-x-auto">
+        <div class="table-scroll">
           <table class="w-full text-sm">
-            <thead>
+            <thead class="bg-white">
               <tr class="border-b border-gray-100 text-left text-xs text-gray-400">
                 <th class="px-3 py-2">ID</th>
                 <th class="px-3 py-2">用户名</th>

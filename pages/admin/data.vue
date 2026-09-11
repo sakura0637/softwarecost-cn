@@ -270,12 +270,12 @@ onMounted(loadMeta)
             <button class="rounded-lg border border-gray-200 px-2 py-1 text-xs text-gray-600 disabled:opacity-40" :disabled="page >= totalPages" @click="page++; loadTable()">下一页</button>
           </div>
 
-          <div class="overflow-x-auto rounded-xl border border-gray-100">
+          <div class="table-scroll rounded-xl border border-gray-100">
             <table class="w-full text-left text-sm">
               <thead class="bg-gray-50 text-xs text-gray-500">
                 <tr>
                   <th v-for="c in columns" :key="c.name" class="whitespace-nowrap px-3 py-2 font-medium">{{ c.label }}<span v-if="c.isPk" class="text-gray-300"> #</span></th>
-                  <th v-if="can('data:edit') || can('data:delete')" class="sticky right-0 bg-gray-50 px-3 py-2 font-medium">操作</th>
+                  <th v-if="can('data:edit') || can('data:delete')" class="sticky right-0 z-20 bg-gray-50 px-3 py-2 font-medium">操作</th>
                 </tr>
               </thead>
               <tbody>

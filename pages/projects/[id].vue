@@ -467,9 +467,9 @@ onMounted(async () => {
           <div v-if="editableFps.length === 0" class="py-10 text-center text-sm text-gray-400">
             暂无功能点。上传需求后点击「AI 识别功能点」，或手动添加。
           </div>
-          <div v-else class="overflow-x-auto">
+          <div v-else class="table-scroll rounded-lg border border-gray-100">
             <table class="w-full text-sm">
-              <thead>
+              <thead class="bg-white">
                 <tr class="border-b border-gray-200 text-left text-xs text-gray-500">
                   <th class="px-2 py-2">名称 / 模块</th>
                   <th class="px-2 py-2">层级</th>

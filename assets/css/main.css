@@ -27,6 +27,18 @@
   .container-custom {
     @apply mx-auto max-w-7xl px-4 sm:px-6 lg:px-8;
   }
+  /* 表格统一外壳：套在表格的直接父 div 上即可，表格本体不用改。
+     效果＝表格框内自带滚动条（右侧竖向 + 底部横向都在框内，不用翻到表格最底下才够得着），
+     表头随竖向滚动吸顶。注意：吸顶的 thead 必须有不透明背景色（各页面已标 bg-white / bg-gray-50）。 */
+  .table-scroll {
+    overflow: auto;
+    max-height: calc(100vh - 230px);
+  }
+  .table-scroll thead {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
 }
 
 /* 页面过渡动画 */

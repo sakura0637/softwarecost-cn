@@ -387,7 +387,7 @@ onMounted(async () => {
           </div>
           <p class="mb-3 text-sm text-gray-500">共 {{ devResult.total.toLocaleString() }} 条设备 <span v-if="devLoading" class="ml-2 text-primary">加载中…</span></p>
           <div class="overflow-hidden rounded-lg border border-gray-100">
-            <div class="max-h-[55vh] min-h-[200px] overflow-auto">
+            <div class="table-scroll min-h-[200px]">
               <table class="w-full min-w-[800px] text-left text-sm">
                 <thead class="sticky top-0 z-10 bg-gray-50 text-xs uppercase text-gray-500">
                   <tr>
@@ -454,7 +454,7 @@ onMounted(async () => {
           </div>
           <p class="mb-3 text-sm text-gray-500">共 {{ linkResult.total.toLocaleString() }} 条对照 <span v-if="linkLoading" class="ml-2 text-primary">加载中…</span></p>
           <div class="overflow-hidden rounded-lg border border-gray-100">
-            <div class="max-h-[55vh] min-h-[200px] overflow-auto">
+            <div class="table-scroll min-h-[200px]">
               <table class="w-full min-w-[900px] text-left text-sm">
                 <thead class="sticky top-0 z-10 bg-gray-50 text-xs uppercase text-gray-500">
                   <tr>
@@ -512,7 +512,7 @@ onMounted(async () => {
             <p class="ml-auto text-sm text-gray-500">共 {{ logTotal.toLocaleString() }} 条记录 <span v-if="logLoading" class="ml-2 text-primary">加载中…</span></p>
           </div>
           <div class="overflow-hidden rounded-lg border border-gray-100">
-            <div class="max-h-[55vh] min-h-[200px] overflow-auto">
+            <div class="table-scroll min-h-[200px]">
               <table class="w-full min-w-[800px] text-left text-sm">
                 <thead class="sticky top-0 z-10 bg-gray-50 text-xs uppercase text-gray-500">
                   <tr>

@@ -373,9 +373,9 @@ onBeforeUnmount(() => {
         </div>
 
         <!-- 明细表 -->
-        <div class="card overflow-x-auto">
+        <div class="card table-scroll pt-0">
           <table class="w-full text-left text-sm">
-            <thead>
+            <thead class="bg-white">
               <tr class="border-b border-gray-200 text-gray-500">
                 <th class="py-3 pr-4 font-medium">城市</th>
                 <th class="py-3 pr-4 font-medium">城市级别</th>

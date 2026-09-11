@@ -386,10 +386,11 @@ onBeforeUnmount(() => {
         </div>
 
         <!-- 各标准核心参数总览 -->
-        <div v-if="benchmarks.length" class="card overflow-x-auto">
+        <div v-if="benchmarks.length" class="card">
           <h2 class="mb-4 text-xl font-bold text-gray-900">各标准核心计量参数总览</h2>
+          <div class="table-scroll">
           <table class="w-full text-left text-sm">
-            <thead>
+            <thead class="bg-white">
               <tr class="border-b border-gray-200 text-gray-500">
                 <th class="py-3 pr-4 font-medium">标准</th>
                 <th class="py-3 pr-4 font-medium">地区</th>
@@ -413,6 +414,7 @@ onBeforeUnmount(() => {
               </tr>
             </tbody>
           </table>
+          </div>
         </div>
 
         <p class="mt-6 rounded-lg bg-blue-50 p-4 text-xs text-blue-700">
