@@ -1,5 +1,6 @@
 // 离线验证：用种子参数 + 示例清单跑一遍双引擎，与源表口径对数
 import { calcOm, quotaValueOf, lookupQuota, lookupC1, type OmParams, type OmItemInput } from '../server/utils/omCalculator'
+import { traceOmRow } from '../server/utils/omTrace'
 import { matchDevice, matchC1Rule, matchQuotaItem, buildQuotaIndex,
   buildSiteTree, parseSiteSelection, buildSiteWhere, countSelectedRows,
 } from '../server/utils/omDeviceMatcher'
@@ -276,6 +277,29 @@ console.log(`  定额法 8452 行 = ${perfMs.toFixed(1)} ms（3 次取最小；�
 console.log(`  合计 = ${bigTotal.toFixed(2)} 元；未匹配 ${bigUnresolved} 行`)
 console.log('')
 
+// ── 单行追溯（借鉴外部设计文档里的「trace 快照 / 追溯抽屉」）────────
+// 要守住的核心不变式只有一条：**追溯面板给出的金额，必须等于引擎算出的金额**。
+// 追溯不是另写一套算法、也不是事后手写的解释 —— 那样引擎一改，面板就会与金额脱节，
+// 比没有追溯更糟（会让人以为「系统自己都说不清」）。
+const trC1 = traceOmRow('c1', r1.items[0], params)
+const trQuota = traceOmRow('quota', r2.items[0], params)
+const trSoft = traceOmRow('quota', soft, params)
+const trNoBill = traceOmRow('quota', { ...r2.items[0], billable: false, amount: 0 } as any, params)
+// 未匹配行：把类别清空让它必然落空，追溯必须如实说明而不是硬编一个算式
+const trMiss = traceOmRow('c1', calcOm('c1', [{ name: '绝不存在的设备XYZ', qty: 1, category_ref: '绝不存在的类别XYZ' } as OmItemInput], params).items[0], params)
+const trText = trC1.steps.concat(trQuota.steps, trSoft.steps)
+  .map((s) => `${s.label}|${s.detail}|${s.from || ''}`).join(' ')
+const trVars = ['month_wage', 'fp_coef', 'wage_ratio', 'formula_raw'].filter((v) => trText.includes(v))
+const subNums = (s: string) => (s.match(/-?\d+(?:\.\d+)?/g) || []).map(Number)
+const subC1 = subNums(trC1.substitution)
+const subQ = subNums(trQuota.substitution)
+console.log('══ 单行追溯 ══')
+console.log(`  C.1  ${trC1.formula}`)
+console.log(`  ${trC1.substitution} 元`)
+console.log(`  定额法 ${trQuota.formula}`)
+console.log(`  ${trQuota.substitution} 元`)
+console.log('')
+
 // ── 断言：引擎必须与源表口径一致（改错参数/公式会在这里红）──
 const indMgmt = r1.indirect.find((l) => l.label === '企业管理费')
 const rateC1 = omRateItems.filter((r) => r.engine === 'c1')
@@ -373,6 +397,31 @@ const checks: Array<[string, boolean, string]> = [
   // —— 大清单性能护栏：8452 行不能退化（这是「全选站点」的真实体量）——
   ['定额法 8452 行 < ' + PERF_MAX_MS + 'ms（查找缓存未退化）', perfMs < PERF_MAX_MS, `${perfMs.toFixed(1)} ms`],
   ['大清单确实算出了金额（非空跑）', bigTotal > 0 && bigUnresolved < 8452, `${bigTotal.toFixed(0)} 元 / 未匹配 ${bigUnresolved}`],
+  // —— 单行追溯：最要紧的是「追溯金额 = 引擎金额」，否则就是自相矛盾 ——
+  ['C.1 追溯金额 = 引擎金额', trC1.amount === r1.items[0].amount, `${trC1.amount} vs ${r1.items[0].amount}`],
+  ['定额法追溯金额 = 引擎金额', trQuota.amount === r2.items[0].amount, `${trQuota.amount} vs ${r2.items[0].amount}`],
+  ['软件条目追溯金额 = 引擎金额', trSoft.amount === soft.amount, `${trSoft.amount} vs ${soft.amount}`],
+  ['C.1 追溯算式自洽（代回去还原金额）',
+    subC1.length === 4 && Math.abs(subC1[0] * subC1[1] * subC1[2] - subC1[3]) < 0.01, trC1.substitution],
+  ['定额法追溯算式自洽（代回去还原金额）',
+    subQ.length === 5 && Math.abs(subQ[0] * subQ[1] * subQ[2] * subQ[3] - subQ[4]) < 0.01, trQuota.substitution],
+  ['C.1 追溯含「单位工作量 / 工作量因子 / 人天单价 / 价格因子」四要素',
+    ['② 单位工作量 E', '③ 工作量调整因子 F', '⑤ 人天单价', '⑥ 价格调整因子 I']
+      .every((k) => trC1.steps.some((s) => s.label.startsWith(k))),
+    trC1.steps.map((s) => s.label).join(',')],
+  ['定额法追溯含「定额值 / 年·月换算 / 类别系数」三要素',
+    ['② 定额值', '③ 年·月换算系数', '④ 类别系数'].every((k) => trQuota.steps.some((s) => s.label.startsWith(k))),
+    trQuota.steps.map((s) => s.label).join(',')],
+  ['按功能点条目追溯给出「点位数」步骤', trSoft.steps.some((s) => s.label.includes('点位数')),
+    trSoft.steps.map((s) => s.label).join(',')],
+  ['追溯文本不泄露内部变量名（说人话）', trVars.length === 0, trVars.join(',')],
+  ['追溯对未匹配行如实说明并带提示',
+    trMiss.amount === 0 && !trMiss.resolved && !!trMiss.warn && trMiss.steps[1].detail.includes('未匹配'),
+    trMiss.steps[1].detail],
+  ['不计费行的追溯直接说明不计取费', trNoBill.amount === 0 && trNoBill.steps.length === 1 && trNoBill.steps[0].detail.includes('不计费'),
+    String(trNoBill.steps.length)],
+  ['追溯带出权威出处（C.1 基准与人工成本基数）',
+    trC1.refs.length >= 2 && trC1.refs.some((r) => r.from === 'om_wage_base.source'), String(trC1.refs.length)],
 ]
 
 console.log('══ 断言 ══')

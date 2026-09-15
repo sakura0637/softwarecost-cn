@@ -50,6 +50,8 @@ export interface OmQuotaRow {
   formula: string | null
   /** 源表原始 Excel 公式（追溯用） */
   formula_raw: string | null
+  /** 推导式的中文说明（只给人和追溯面板看，不参与计算） */
+  formula_text: string | null
   source: string | null; note: string | null; seq: number
 }
 export interface OmStationRow {
@@ -289,6 +291,48 @@ function groupProduct(p: OmParams, groupKey: string): number {
     .reduce((a, f) => a * Number(f.value), 1)
 }
 
+/** 本批测算实际采用的全局因子（两法各自的那几个乘数） */
+export interface OmGlobalFactors {
+  /** C.1 工作量调整因子 F = 失效率 × 离散程度 × 复杂程度 */
+  workloadFactor: number
+  /** C.1 服务级别因子 = 服务周期 × 服务频率 × 服务对象生存周期 */
+  basePriceFactor: number
+  /** C.1 人员配备系数（加权） */
+  staffCoef: number
+  /** 定额法 硬件取费调整系数 */
+  hardCoef: number
+  /** 定额法 软件取费调整系数 */
+  softCoef: number
+  /** 年·月换算系数 */
+  monthFactor: number
+  /** 人天单价 = 月工资基数 ÷ 月计薪天数 */
+  dailyRate: number
+}
+
+/**
+ * 全局因子取值的**单一来源**：`calcOm` 与 `traceOmRow`（单行追溯）都调用它。
+ * 追溯链上的每个乘数与被追溯的金额由此必然同源 —— 不可能出现
+ * 「追溯面板显示的系数」与「实际算钱用的系数」不一致的情况。
+ */
+export function deriveOmFactors(p: OmParams): OmGlobalFactors {
+  return {
+    workloadFactor: groupProduct(p, 'c1_workload'),
+    basePriceFactor: groupProduct(p, 'c1_price'),
+    staffCoef: factorValue(p, 'c1_staff', '人员配备系数（加权）', 1),
+    hardCoef: factorValue(p, 'quota_global', '硬件取费调整系数', 1),
+    softCoef: factorValue(p, 'quota_global', '软件取费调整系数', 1),
+    monthFactor: factorValue(p, 'quota_global', '年·月换算系数', 12),
+    dailyRate: p.dailyRate,
+  }
+}
+
+/** 某个因子分组里真正参与连乘的因子（追溯时逐个列出，如 失效率1.2 × 离散1.8 × 复杂1.0） */
+export function factorBreakdown(p: OmParams, groupKey: string): Array<{ name: string; value: number; basis: string | null }> {
+  return p.factors
+    .filter((f) => f.group_key === groupKey && (f.calc === 'multiply' || !f.calc))
+    .map((f) => ({ name: f.name, value: Number(f.value), basis: f.basis }))
+}
+
 // ⚠️ 性能关键：归一化名缓存。
 // normName 是**纯函数**，但在一次大清单测算里会被调用上百万次
 // （349 条定额 × 每行最多 4 轮探测；设备库里同名设备会重复出现几十次）。
@@ -307,19 +351,25 @@ function normName(s: string | null | undefined): string {
   return out
 }
 
-/** 模糊查 C.1 基准：先精确、再去掉「借」前缀、再归一化包含匹配 */
-function lookupC1Raw(c1: OmC1Row[], raw: string): number | null {
+/** 模糊查 C.1 基准行：先精确、再去掉「借」前缀、再归一化包含匹配 */
+export function findC1Row(c1: OmC1Row[], raw: string): OmC1Row | null {
   const hit = c1.find((x) => x.category === raw)
-  if (hit) return Number(hit.workload)
+  if (hit) return hit
   const stripped = raw.replace(/^借/, '')
   const hit2 = c1.find((x) => x.category === stripped)
-  if (hit2) return Number(hit2.workload)
+  if (hit2) return hit2
   const n = normName(stripped)
   const hit3 =
     c1.find((x) => normName(x.category).replace(/^借/, '') === n) ||
     c1.find((x) => normName(x.category).replace(/^借/, '').includes(n)) ||
     c1.find((x) => n.includes(normName(x.category).replace(/^借/, '')))
-  return hit3 ? Number(hit3.workload) : null
+  return hit3 || null
+}
+
+/** C.1 基准查值的**唯一实现**：先精确定位到行，再取该行的人天值 */
+function lookupC1Raw(c1: OmC1Row[], raw: string): number | null {
+  const row = findC1Row(c1, raw)
+  return row ? Number(row.workload) : null
 }
 
 /**
@@ -451,13 +501,14 @@ export function calcOm(
   p: OmParams,
   opts: OmCalcOptions = {}
 ): OmResult {
-  const workloadFactor = groupProduct(p, 'c1_workload')
-  const basePriceFactor = groupProduct(p, 'c1_price')
-  const staffCoef = factorValue(p, 'c1_staff', '人员配备系数（加权）', 1)
-  const hardCoef = factorValue(p, 'quota_global', '硬件取费调整系数', 1)
-  const softCoef = factorValue(p, 'quota_global', '软件取费调整系数', 1)
-  const monthFactor = factorValue(p, 'quota_global', '年·月换算系数', 12)
-  const dailyRate = p.dailyRate
+  const f = deriveOmFactors(p)
+  const workloadFactor = f.workloadFactor
+  const basePriceFactor = f.basePriceFactor
+  const staffCoef = f.staffCoef
+  const hardCoef = f.hardCoef
+  const softCoef = f.softCoef
+  const monthFactor = f.monthFactor
+  const dailyRate = f.dailyRate
 
   const results: OmItemResult[] = []
   let laborCost = 0

@@ -310,6 +310,26 @@ function rowStation(r: Row): string {
 }
 
 // ── 计算 ───────────────────────────────────────────────────
+/** 清单行 → 计算接口的 item。用字段白名单，不回传整行（否则 8452 行的请求体会被撑大） */
+function rowToItem(r: Row, i: number) {
+  return {
+    name: r.name || `第 ${i + 1} 行`,
+    station: r.station,
+    category: r.category,
+    sheet_no: r.sheet_no,
+    unit: r.unit,
+    qty: Number(r.qty) || 0,
+    category_ref: r.category_ref,
+    workload: r.workload,
+    quota_ref: r.quota_ref,
+    quota_value: r.quota_value,
+    kind: r.kind || undefined,
+    point_count: r.point_count,
+    billable: r.billable,
+    note: r.note,
+  }
+}
+
 async function calculate() {
   if (!rows.value.length) {
     result.value = null
@@ -323,22 +343,7 @@ async function calculate() {
       engine: engine.value,
       wage_base_id: wageBaseId.value,
       mgmt_service_rate: mgmtEnabled.value ? Number(mgmtRate.value) || 0 : 0,
-      items: rows.value.map((r, i) => ({
-        name: r.name || `第 ${i + 1} 行`,
-        station: r.station,
-        category: r.category,
-        sheet_no: r.sheet_no,
-        unit: r.unit,
-        qty: Number(r.qty) || 0,
-        category_ref: r.category_ref,
-        workload: r.workload,
-        quota_ref: r.quota_ref,
-        quota_value: r.quota_value,
-        kind: r.kind || undefined,
-        point_count: r.point_count,
-        billable: r.billable,
-        note: r.note,
-      })),
+      items: rows.value.map(rowToItem),
     }
     const res: any = await api('/api/om/calculate', { method: 'POST', body: payload })
     result.value = res.result
@@ -348,6 +353,43 @@ async function calculate() {
   } finally {
     calculating.value = false
   }
+}
+
+// ── 单行追溯：点一行，看这笔钱是怎么算出来的 ────────────────────
+// 借鉴外部设计文档的「追溯抽屉」。刻意**把这一行重新发给后端算**，
+// 而不是在前端拿已经算好的数字拼算式 —— 推导链必须由真正算钱的引擎给出，
+// 否则面板就成了一份「事后手写的解释」，引擎一改就与金额脱节。
+const showTrace = ref(false)
+const traceLoading = ref(false)
+const traceData = ref<any>(null)
+const traceRow = ref<Row | null>(null)
+
+async function openTrace(i: number) {
+  const r = rows.value[i]
+  if (!r) return
+  traceRow.value = r
+  traceData.value = null
+  showTrace.value = true
+  traceLoading.value = true
+  try {
+    const res: any = await api('/api/om/trace', {
+      method: 'POST',
+      body: { engine: engine.value, wage_base_id: wageBaseId.value, item: rowToItem(r, i) },
+    })
+    traceData.value = res.trace
+  } catch (e: any) {
+    errorMsg.value = e?.data?.statusMessage || e?.message || '追溯失败'
+    showTrace.value = false
+  } finally {
+    traceLoading.value = false
+  }
+}
+
+/** 追溯链上的数字显示：最多 6 位小数、去掉多余的 0 */
+const tnum = (n: any, d = 6) => {
+  const v = Number(n)
+  if (!isFinite(v)) return '—'
+  return String(Number(v.toFixed(d)))
 }
 
 function switchEngine(v: Engine) {
@@ -701,8 +743,9 @@ onMounted(loadParams)
                     <span v-if="!r.billable" class="text-[11px] text-gray-400">不计费</span>
                     <span v-else>{{ result?.items?.[pageStart + li] ? fmt(result.items[pageStart + li].amount) : '—' }}</span>
                   </td>
-                  <td class="sticky right-0 bg-white px-3 py-1.5 text-center">
-                    <button class="text-xs text-red-500 hover:underline" @click="delRow(pageStart + li)">删除</button>
+                  <td class="sticky right-0 bg-white px-3 py-1.5 text-center whitespace-nowrap">
+                    <button class="text-xs text-primary hover:underline" title="看这笔钱是怎么算出来的" @click="openTrace(pageStart + li)">追溯</button>
+                    <button class="ml-2 text-xs text-red-500 hover:underline" @click="delRow(pageStart + li)">删除</button>
                   </td>
                 </tr>
               </tbody>
@@ -1032,6 +1075,36 @@ onMounted(loadParams)
           </li>
         </ul>
       </div>
+
+      <!-- 精度与舍入：与源表 Excel 对账时最容易引起「算错了」争议的地方，先把规则说清 -->
+      <div class="mt-4 rounded-xl border border-gray-200 px-4 py-3 text-sm leading-relaxed text-gray-600">
+        <h3 class="mb-2 text-sm font-semibold text-gray-800">四、精度与舍入（怎么和 Excel 对账）</h3>
+        <ul class="ml-4 list-disc space-y-1 text-xs">
+          <li>参数取值按数据库原始精度参与计算，中间不做截断。</li>
+          <li>逐行金额由「数量 × 单价」直接得出，仅在<b>展示</b>时保留 2 位小数（四舍五入），与 Excel 单元格的显示口径一致。</li>
+          <li>汇总金额<b>先按原始精度加总、最后一次性舍入</b> —— 即「先加总后舍入」，与 Excel 的 SUM 行为一致。</li>
+          <li>
+            因此本系统与源表 Excel 的差异只可能落在浮点末位（分/角以下），不会出现「逐行先舍入再相加」
+            造成的系统性偏差。逐行对账时建议容差取
+            <b>±0.05 元/行</b>；超出这个范围的差异一定不是舍入问题，要查明原因。
+          </li>
+        </ul>
+      </div>
+
+      <!-- 单行追溯 -->
+      <div class="mt-4 rounded-xl border border-primary/20 bg-primary/[0.03] px-4 py-3 text-sm leading-relaxed text-gray-600">
+        <h3 class="mb-2 text-sm font-semibold text-gray-800">五、想知道某一行的钱具体怎么来的？</h3>
+        <p class="text-xs">
+          明细表每一行的「操作」列都有<b>追溯</b>按钮，点开就是这一行的完整推导链：
+          单位工作量取自哪个 C.1 类别、工作量因子由哪几个因子连乘、人天单价怎么折算、
+          定额条目是固定值还是推导式现算、类别系数为什么取硬件还是软件……
+          每一步都标明出处，并列出该行依赖的权威来源。
+          <span class="text-gray-500">
+            追溯的每一步都由真正算钱的引擎给出（不是在页面上另拼一套算式），所以它和金额永远对得上；
+            后台改完参数重新测算，追溯内容会同步变化。
+          </span>
+        </p>
+      </div>
     </div>
 
     <!-- ── 站点筛选弹窗 ─────────────────────────────────────── -->
@@ -1115,6 +1188,76 @@ onMounted(loadParams)
               确定并载入（{{ selectedRowsCount.toLocaleString('zh-CN') }} 行）
             </button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── 单行追溯抽屉：点一个金额，看它怎么来的 ──────────────── -->
+    <div
+      v-if="showTrace"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+      @click.self="showTrace = false"
+    >
+      <div class="flex max-h-[86vh] w-full max-w-2xl flex-col rounded-xl bg-white shadow-xl">
+        <div class="flex items-start justify-between gap-4 border-b border-gray-100 px-6 py-4">
+          <div class="min-w-0">
+            <h3 class="text-lg font-semibold text-gray-900">这一行的钱是怎么算出来的</h3>
+            <p class="mt-0.5 truncate text-xs text-gray-500" :title="traceRow?.name || ''">
+              {{ traceRow?.name }}<span v-if="traceRow?.station">　·　{{ traceRow.station }}</span>
+            </p>
+          </div>
+          <button class="shrink-0 text-gray-400 hover:text-gray-600" @click="showTrace = false">✕</button>
+        </div>
+
+        <div class="min-h-0 flex-1 overflow-auto px-6 py-4">
+          <div v-if="traceLoading" class="py-12 text-center text-sm text-gray-400">正在读取后台参数并逐步还原…</div>
+
+          <template v-else-if="traceData">
+            <p
+              v-if="traceData.warn"
+              class="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-700"
+            >{{ traceData.warn }}</p>
+
+            <div class="mb-4 rounded-lg bg-gray-50 px-3 py-2 font-mono text-xs leading-relaxed text-gray-700">
+              {{ traceData.formula }}
+            </div>
+
+            <ol class="space-y-3">
+              <li
+                v-for="(s, si) in traceData.steps"
+                :key="si"
+                class="border-l-2 pl-3"
+                :class="s.final ? 'border-primary' : 'border-gray-200'"
+              >
+                <div class="text-sm" :class="s.final ? 'font-semibold text-gray-900' : 'font-medium text-gray-700'">
+                  {{ s.label }}
+                </div>
+                <div class="mt-0.5 font-mono text-xs leading-relaxed text-gray-600">{{ s.detail }}</div>
+                <div v-if="s.from" class="mt-0.5 text-[11px] text-gray-400">出处：{{ s.from }}</div>
+              </li>
+            </ol>
+
+            <div v-if="traceData.refs && traceData.refs.length" class="mt-5 rounded-xl border border-gray-200 px-4 py-3">
+              <h4 class="mb-2 text-sm font-semibold text-gray-800">本行金额依赖的权威出处</h4>
+              <ul class="ml-4 list-disc space-y-1 text-xs leading-relaxed text-gray-600">
+                <li v-for="(r, ri) in traceData.refs" :key="ri">
+                  {{ r.text }}<span class="text-gray-400">（{{ r.from }}）</span>
+                </li>
+              </ul>
+            </div>
+
+            <p class="mt-4 text-[11px] leading-relaxed text-gray-400">
+              每一步的乘数都与上表金额同源 —— 追溯面板不另算一套，后台改完参数重新测算即同步变化。
+              数值按原始精度参与计算，逐行金额仅在展示时保留 2 位小数；汇总为先加总后舍入（与 Excel 的 SUM 一致）。
+            </p>
+          </template>
+        </div>
+
+        <div class="flex items-center gap-3 border-t border-gray-100 px-6 py-4">
+          <NuxtLink to="/admin/data" class="mr-auto text-xs text-primary hover:underline">去「数据维护 → 运维参数」改参数 →</NuxtLink>
+          <button class="rounded-lg border border-gray-200 px-4 py-2 text-sm text-gray-600 hover:bg-gray-100" @click="showTrace = false">
+            关闭
+          </button>
         </div>
       </div>
     </div>
