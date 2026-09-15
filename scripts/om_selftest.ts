@@ -1,5 +1,5 @@
 // 离线验证：用种子参数 + 示例清单跑一遍双引擎，与源表口径对数
-import { calcOm, quotaValueOf, type OmParams, type OmItemInput } from '../server/utils/omCalculator'
+import { calcOm, quotaValueOf, lookupQuota, lookupC1, type OmParams, type OmItemInput } from '../server/utils/omCalculator'
 import { matchDevice, matchC1Rule, matchQuotaItem, buildQuotaIndex,
   buildSiteTree, parseSiteSelection, buildSiteWhere, countSelectedRows,
 } from '../server/utils/omDeviceMatcher'
@@ -219,6 +219,63 @@ console.log(`        ${omQuotaItems.find((q) => q.name === 'UPS电源(3KVA)')?.f
 console.log(`        固定值条目：${omQuotaItems.find((q) => !q.formula)?.formula_text}`)
 console.log('')
 
+// ── 查找缓存（大清单测算的性能关键，但绝不能改变结果）──
+// 设备库全量 8452 行里同名设备重复出现几十次，而 lookupQuota 是 349 条定额的全表扫描
+// （未命中时最多探 4 轮 + 反复算归一化名）。加记忆化后定额法 8452 行 1042ms → ~40ms，
+// 最坏情况（全部未命中）3852ms → ~33ms。这里锁住两点：**结果不变** + **重复 ref 真正复用**。
+const quotaRefs = [omQuotaItems[0].name, omQuotaItems[5].name, '完全不存在的设备名XYZ', omQuotaItems[0].name]
+const c1Refs = [omC1Benchmarks[0].category, '借' + omC1Benchmarks[3].category, '完全不存在的类别XYZ']
+
+const qCache = new Map<string, any>()
+const cCache = new Map<string, number | null>()
+const qSame = quotaRefs.every((r) => {
+  const a = lookupQuota(params.quota, r, qCache)
+  const b = lookupQuota(params.quota, r)
+  return a === b || (a == null && b == null)
+})
+const cSame = c1Refs.every((r) => lookupC1(params.c1, r, cCache) === lookupC1(params.c1, r))
+
+console.log('══ 查找缓存 ══')
+console.log(`  缓存 / 逐次查找结果一致： 定额 ${qSame}   C.1 ${cSame}`)
+console.log(`  定额缓存键 ${qCache.size} 个（探了 ${quotaRefs.length} 次，末次与首次同名 → 应复用）`)
+console.log(`  C.1 缓存键 ${cCache.size} 个；「借XX」类别的解析值 = ${lookupC1(params.c1, '借' + omC1Benchmarks[3].category)}`)
+console.log('')
+
+// ── 大清单性能护栏（防「悄悄退回每行全表扫描」→ 主人又看到红线拦路）──
+// 设备库「全选站点」= 8452 行，正是被旧的 3000 行上限挡住的那个正常用法。
+// 取 3 次的**最小值**（排除调度抖动）后本机实测：
+//   两级缓存都在      ≈ 45~60 ms
+//   只剩归一化名缓存  ≈ 330 ms     ← 等价于「摘掉 ref 缓存」
+//   两级全摘          ≈ 1040 ms（最坏 3850 ms）
+// 阈值 220ms：对现状有约 4 倍余量（不误报），但「摘掉 ref 缓存」会被抓住。
+// ⚠️ 这条护栏做过反向实测 —— 第一版阈值 800ms 时摘掉缓存仍能通过，等于摆设，故收紧。
+// 这类回归 esbuild / imports / vue / dbsql 四项**全都查不出来**，只能靠实测。
+const PERF_MAX_MS = 220
+const bigItems: OmItemInput[] = Array.from({ length: 8452 }, (_, i) => {
+  const q = omQuotaItems[i % omQuotaItems.length]
+  return {
+    name: q.name,
+    station: omStationTypes[i % omStationTypes.length].name,
+    qty: 1 + (i % 5),
+    // 2/3 精确命中、1/3 未命中（对应真实设备库 66.8% 的定额覆盖率）
+    quota_ref: i % 3 === 0 ? q.name : `${q.name}（含安装附件）`,
+  } as OmItemInput
+})
+let perfMs = Number.POSITIVE_INFINITY
+let bigTotal = 0
+let bigUnresolved = 0
+for (let k = 0; k < 3; k++) {
+  const tPerf0 = process.hrtime.bigint()
+  const bigRes = calcOm('quota', bigItems, params)
+  perfMs = Math.min(perfMs, Number(process.hrtime.bigint() - tPerf0) / 1e6)
+  bigTotal = bigRes.total
+  bigUnresolved = bigRes.items.filter((x) => !x.resolved).length
+}
+console.log('══ 大清单性能 ══')
+console.log(`  定额法 8452 行 = ${perfMs.toFixed(1)} ms（3 次取最小；阈值 ${PERF_MAX_MS}ms，摘掉 ref 缓存会到 ~330ms）`)
+console.log(`  合计 = ${bigTotal.toFixed(2)} 元；未匹配 ${bigUnresolved} 行`)
+console.log('')
+
 // ── 断言：引擎必须与源表口径一致（改错参数/公式会在这里红）──
 const indMgmt = r1.indirect.find((l) => l.label === '企业管理费')
 const rateC1 = omRateItems.filter((r) => r.engine === 'c1')
@@ -307,6 +364,15 @@ const checks: Array<[string, boolean, string]> = [
     String(omQuotaItems.filter((q) => !q.formula).length)],
   ['「÷ 12个月」年额折月说明 ≥ 35 种', ftextUniq.filter((t) => t.includes('÷ 12个月')).length >= 35,
     String(ftextUniq.filter((t) => t.includes('÷ 12个月')).length)],
+  // —— 查找缓存（大清单性能关键；只许加速、不许改结果）——
+  ['定额查找：缓存与逐次结果一致', qSame, String(qSame)],
+  ['C.1 查找：缓存与逐次结果一致', cSame, String(cSame)],
+  ['重复 ref 走缓存（4 次探测只建 3 个键）', qCache.size === 3, String(qCache.size)],
+  ['C.1「借XX」类别可解析且入缓存', cCache.size === 3 && c1Refs.slice(0, 2).every((r) => lookupC1(params.c1, r) != null),
+    `${cCache.size} 键 / 借类别=${lookupC1(params.c1, c1Refs[1])}`],
+  // —— 大清单性能护栏：8452 行不能退化（这是「全选站点」的真实体量）——
+  ['定额法 8452 行 < ' + PERF_MAX_MS + 'ms（查找缓存未退化）', perfMs < PERF_MAX_MS, `${perfMs.toFixed(1)} ms`],
+  ['大清单确实算出了金额（非空跑）', bigTotal > 0 && bigUnresolved < 8452, `${bigTotal.toFixed(0)} 元 / 未匹配 ${bigUnresolved}`],
 ]
 
 console.log('══ 断言 ══')

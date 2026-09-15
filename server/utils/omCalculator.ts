@@ -289,17 +289,26 @@ function groupProduct(p: OmParams, groupKey: string): number {
     .reduce((a, f) => a * Number(f.value), 1)
 }
 
+// ⚠️ 性能关键：归一化名缓存。
+// normName 是**纯函数**，但在一次大清单测算里会被调用上百万次
+// （349 条定额 × 每行最多 4 轮探测；设备库里同名设备会重复出现几十次）。
+// 不缓存的话定额法 3000 行要 ~385ms、8452 行要 ~1042ms，最坏（全部未命中）近 4 秒。
+const NORM_CACHE = new Map<string, string>()
+const NORM_CACHE_MAX = 20000
+
 function normName(s: string | null | undefined): string {
-  return String(s == null ? '' : s)
-    .replace(/[\s（）()·・,，、]/g, '')
-    .toLowerCase()
+  const raw = String(s == null ? '' : s)
+  const hit = NORM_CACHE.get(raw)
+  if (hit !== undefined) return hit
+  const out = raw.replace(/[\s（）()·・,，、]/g, '').toLowerCase()
+  // 简单的容量保护：超限整个清空（本场景键集合很小，重建可忽略）
+  if (NORM_CACHE.size >= NORM_CACHE_MAX) NORM_CACHE.clear()
+  NORM_CACHE.set(raw, out)
+  return out
 }
 
 /** 模糊查 C.1 基准：先精确、再去掉「借」前缀、再归一化包含匹配 */
-export function lookupC1(c1: OmC1Row[], ref?: string | null): number | null {
-  if (!ref) return null
-  const raw = String(ref).trim()
-  if (!raw) return null
+function lookupC1Raw(c1: OmC1Row[], raw: string): number | null {
   const hit = c1.find((x) => x.category === raw)
   if (hit) return Number(hit.workload)
   const stripped = raw.replace(/^借/, '')
@@ -313,11 +322,29 @@ export function lookupC1(c1: OmC1Row[], ref?: string | null): number | null {
   return hit3 ? Number(hit3.workload) : null
 }
 
-/** 模糊查定额：先精确，再归一化包含匹配 */
-export function lookupQuota(quota: OmQuotaRow[], ref?: string | null): OmQuotaRow | null {
+/**
+ * @param cache 同一批测算内复用查找结果（键 = ref 原文）。**必须每次测算新建一个**，
+ *              因为参数表可能在两次测算之间被后台改过。不传则退化为纯函数。
+ */
+export function lookupC1(
+  c1: OmC1Row[],
+  ref?: string | null,
+  cache?: Map<string, number | null>
+): number | null {
   if (!ref) return null
   const raw = String(ref).trim()
   if (!raw) return null
+  if (cache) {
+    const hit = cache.get(raw)
+    if (hit !== undefined) return hit
+  }
+  const val = lookupC1Raw(c1, raw)
+  if (cache) cache.set(raw, val)
+  return val
+}
+
+/** 模糊查定额：先精确，再归一化包含匹配 */
+function lookupQuotaRaw(quota: OmQuotaRow[], raw: string): OmQuotaRow | null {
   const hit = quota.find((x) => x.name === raw)
   if (hit) return hit
   const n = normName(raw)
@@ -327,6 +354,24 @@ export function lookupQuota(quota: OmQuotaRow[], ref?: string | null): OmQuotaRo
     quota.find((x) => normName(x.name).length >= 4 && n.includes(normName(x.name))) ||
     null
   )
+}
+
+/** @param cache 同 lookupC1：键 = ref 原文，每次测算新建 */
+export function lookupQuota(
+  quota: OmQuotaRow[],
+  ref?: string | null,
+  cache?: Map<string, OmQuotaRow | null>
+): OmQuotaRow | null {
+  if (!ref) return null
+  const raw = String(ref).trim()
+  if (!raw) return null
+  if (cache) {
+    const hit = cache.get(raw)
+    if (hit !== undefined) return hit
+  }
+  const val = lookupQuotaRaw(quota, raw)
+  if (cache) cache.set(raw, val)
+  return val
 }
 
 function findStation(stations: OmStationRow[], it: OmItemInput): OmStationRow | undefined {
@@ -418,6 +463,11 @@ export function calcOm(
   let laborCost = 0
   let totalPersonDays = 0
 
+  // 本批测算专用的查找缓存：设备库同一设备名会重复出现几十次，
+  // 缓存后 8452 行走一次全表探测即可（定额法 1042ms → 数十 ms 量级）。
+  const c1Cache = new Map<string, number | null>()
+  const quotaCache = new Map<string, OmQuotaRow | null>()
+
   for (const it of items) {
     const qty = Number(it.qty) || 0
     const st = findStation(p.stations, it)
@@ -439,7 +489,7 @@ export function calcOm(
       if (it.workload != null && it.workload !== ('' as any)) {
         used = Number(it.workload) || 0
       } else {
-        const v = lookupC1(p.c1, it.category_ref)
+        const v = lookupC1(p.c1, it.category_ref, c1Cache)
         if (v == null) {
           used = 0
           resolved = false
@@ -463,7 +513,7 @@ export function calcOm(
       let resolved = true
       let warn: string | undefined
       let byFormula = false
-      qRow = lookupQuota(p.quota, it.quota_ref)
+      qRow = lookupQuota(p.quota, it.quota_ref, quotaCache)
       if (it.quota_value != null && it.quota_value !== ('' as any)) {
         used = Number(it.quota_value) || 0
       } else if (!qRow) {

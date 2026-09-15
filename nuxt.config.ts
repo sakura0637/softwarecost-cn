@@ -40,9 +40,13 @@ export default defineNuxtConfig({
     rollupConfig: {
       external: ['pg'],
     },
-    // 标准附件上传放开请求体大小上限（默认 1MB 会被 PDF 顶爆）
+    // 请求体大小上限（Nitro 默认 1MB，会在读 body 阶段就拒绝，走不到业务校验）：
+    //   /api/standards/**  要传 PDF/Word 附件
+    //   /api/om/**         测算接口要传整份设备清单 —— 「全选站点」8452 行实测 1.79MB，
+    //                      默认 1MB 会把正常用法顶掉（2026-09-15）
     routeRules: {
       '/api/standards/**': { body: { maxSize: '25mb' } },
+      '/api/om/**': { body: { maxSize: '16mb' } },
     },
   },
 })
