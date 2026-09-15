@@ -279,10 +279,9 @@ onMounted(loadMeta)
             <button class="rounded-lg border border-gray-200 px-2 py-1 text-xs text-gray-600 disabled:opacity-40" :disabled="page >= totalPages" @click="page++; loadTable()">下一页</button>
           </div>
 
-          <!-- 表级说明：讲清这张表怎么看、怎么填（来自 dataTables.ts 的 hint） -->
-          <p v-if="activeHint" class="mb-3 rounded-lg border border-blue-100 bg-blue-50/60 px-3 py-2 text-xs leading-relaxed text-gray-600">
-            {{ activeHint }}
-          </p>
+          <!-- 表级说明：讲清这张表怎么看、怎么填（来自 dataTables.ts 的 hint）
+               whitespace-pre-line：hint 里用 \n 分行，直接照原样换行显示，免得挤成一大段 -->
+          <div v-if="activeHint" class="mb-3 rounded-lg border border-blue-100 bg-blue-50/60 px-3 py-2.5 text-xs leading-relaxed whitespace-pre-line text-gray-600">{{ activeHint }}</div>
 
           <div class="table-scroll rounded-xl border border-gray-100">
             <table class="w-full text-left text-sm">

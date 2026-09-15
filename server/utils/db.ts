@@ -497,7 +497,7 @@ CREATE TABLE IF NOT EXISTS om_factors (
   name         VARCHAR(128) NOT NULL,
   value        DOUBLE PRECISION NOT NULL DEFAULT 1,
   unit         VARCHAR(16) NOT NULL DEFAULT 'ratio',  -- ratio 系数 / coef 等级系数 / yuan 元 / person_day 人天
-  calc         VARCHAR(16) NOT NULL DEFAULT 'multiply', -- multiply 连乘 / product 合计 / weighted 加权
+  calc         VARCHAR(16) NOT NULL DEFAULT 'multiply', -- ⚠️ 只有 multiply 会真的进公式（omCalculator 只认它）；option 备选(不参与) / product 分组合计 / weighted 加权平均（后两者仅展示）
   description  TEXT,
   basis        TEXT,                                  -- 取值依据（国标条款 / 源表位置）
   seq          INTEGER NOT NULL DEFAULT 0,
