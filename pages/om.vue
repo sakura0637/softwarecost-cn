@@ -3,7 +3,13 @@
 //   C.1 工作量法：数量 × (单位工作量 × 工作量因子) × (人天单价 × 价格因子)
 //   定额单价法：数量 × 定额值(元/月) × 12 × 类别系数(硬件/软件)
 // 所有系数/费率/基准/定额都来自后台【数据维护 → 运维参数】，本页只读不写死。
+// 注意：/api/om/* 需要 om:view 权限，服务端只认 Authorization 头（不读 cookie），
+// 因此这里必须用 useAuth() 的 api() 发请求，不能用裸 $fetch —— 否则会 401「未登录」。
+import { useAuth } from '~/composables/useAuth'
+
 useHead({ title: '运维费用测算 · 水网数智造价系统' })
+
+const { api } = useAuth()
 
 type Engine = 'c1' | 'quota'
 
@@ -46,7 +52,7 @@ const errorMsg = ref('')
 async function loadParams() {
   try {
     const q = wageBaseId.value ? `?wage_base_id=${wageBaseId.value}` : ''
-    params.value = await $fetch(`/api/om/params${q}`)
+    params.value = await api(`/api/om/params${q}`)
     if (wageBaseId.value == null && params.value?.wage?.id) wageBaseId.value = params.value.wage.id
     // 管理服务费率默认取后台 mgmt_service 组的第一条（低档 10%）
     const mg = (params.value?.rates || []).find((x: any) => x.group_key === 'mgmt_service')
@@ -60,7 +66,7 @@ async function loadSample() {
   loading.value = true
   errorMsg.value = ''
   try {
-    if (!sample.value) sample.value = await $fetch('/api/om/sample')
+    if (!sample.value) sample.value = await api('/api/om/sample')
     rows.value = sample.value.items.map((it: any) => ({
       station: it.station || '',
       sheet_no: it.sheet_no,
@@ -135,7 +141,7 @@ async function calculate() {
         note: r.note,
       })),
     }
-    const res: any = await $fetch('/api/om/calculate', { method: 'POST', body: payload })
+    const res: any = await api('/api/om/calculate', { method: 'POST', body: payload })
     result.value = res.result
     unresolved.value = res.unresolved || []
   } catch (e: any) {
