@@ -22,6 +22,8 @@ export type OmEngine = 'c1' | 'quota'
 export interface OmWageRow {
   id: number; year: number | null; region: string | null; industry: string | null
   monthly_wage: number; work_days: number; is_default: boolean
+  /** 用途：c1 = C.1工作量法锚点 / quota = 定额法锚点 / ref = 仅参考 */
+  usage: string | null
   source: string | null; note: string | null
 }
 export interface OmFactorRow {
@@ -30,7 +32,10 @@ export interface OmFactorRow {
   description: string | null; basis: string | null; seq: number
 }
 export interface OmRateRow {
-  id: number; group_key: string; group_name: string | null; name: string
+  id: number; group_key: string; group_name: string | null
+  /** 适用引擎：c1 / quota（两法尾部费用结构不同） */
+  engine: string
+  name: string
   rate: number; unit: string; base_note: string | null; description: string | null; seq: number
 }
 export interface OmC1Row {
@@ -39,6 +44,12 @@ export interface OmC1Row {
 }
 export interface OmQuotaRow {
   id: number; name: string; unit: string; quota: number; kind: string
+  /** 是否按功能点（点位数）计价：软件类条目需再乘点位数 */
+  point_based: boolean | null
+  /** 变量化推导式（空 = 直接用 quota 固定值） */
+  formula: string | null
+  /** 源表原始 Excel 公式（追溯用） */
+  formula_raw: string | null
   source: string | null; note: string | null; seq: number
 }
 export interface OmStationRow {
@@ -51,11 +62,15 @@ export interface OmParams {
   wage: OmWageRow | undefined
   /** 人天单价 = 月均工资 ÷ 月计薪天数 */
   dailyRate: number
+  /** 定额法专用工资锚点（usage='quota'），用于现算定额表中的 month_wage 类公式 */
+  quotaWage: OmWageRow | undefined
   factors: OmFactorRow[]
   rates: OmRateRow[]
   c1: OmC1Row[]
   quota: OmQuotaRow[]
   stations: OmStationRow[]
+  /** 定额推导式变量表（month_wage / fp_coef / wage_ratio / months） */
+  quotaVars: Record<string, number>
 }
 
 export interface OmItemInput {
@@ -73,8 +88,10 @@ export interface OmItemInput {
   quota_ref?: string
   /** quota 引擎：定额值覆盖值 */
   quota_value?: number | null
-  /** quota 引擎：硬件 / 软件 */
+  /** quota 引擎：硬件 / 软件（留空则以定额库中该条目的类别为准） */
   kind?: string
+  /** quota 引擎：点位数（按功能点计价的条目必填，如 PLC应用系统 / UNITY PRO） */
+  point_count?: number | null
   /** 明确不计费（线缆/机柜/家具等）：金额按 0 计，且不算「未匹配」 */
   billable?: boolean
   note?: string
@@ -91,6 +108,10 @@ export interface OmItemResult extends OmItemInput {
   correctedPrice: number
   /** 类别系数（quota） */
   kindCoef: number
+  /** 定额值是否为变量化推导式现算（quota） */
+  quotaByFormula?: boolean
+  /** 实际参与计算的点位数（quota，按功能点计价的条目） */
+  usedPointCount?: number
   stationTimeFactor: number
   amount: number
   resolved: boolean
@@ -126,6 +147,9 @@ export interface OmResult {
   pretax: number
   tax: OmCostLine | null
   spare: OmCostLine | null
+  /** 以其他费用项为基数的费用（如定额法暂列金，基数是备品备件） */
+  extra: OmCostLine[]
+  extraTotal: number
   total: number
   meta: {
     wageBaseLabel: string
@@ -141,6 +165,8 @@ export interface OmResult {
     softCoef: number
     monthFactor: number
     engineLabel: string
+    /** 定额推导式变量表（month_wage / fp_coef / wage_ratio / months） */
+    quotaVars: Record<string, number>
   }
 }
 
@@ -172,7 +198,83 @@ export async function loadOmParams(wageBaseId?: number | null): Promise<OmParams
   const days = wage ? Number(wage.work_days) || 21.75 : 21.75
   const dailyRate = wage ? Number(wage.monthly_wage) / days : 0
 
-  return { wageBases, wage, dailyRate, factors, rates, c1, quota, stations }
+  // 定额法有自己的工资锚点（源表定额!D3 = 136833/12 = 11402.75，与 C.1 法的 11436.9167 不同）
+  const quotaWage = wageBases.find((w) => w.usage === 'quota') || wage
+
+  // 定额推导式变量表：全部取自后台可维护的参数，改参数 → 定额值联动
+  const fv = (name: string, def: number) => {
+    const f = factors.find((x) => x.group_key === 'quota_global' && x.name === name)
+    return f ? Number(f.value) : def
+  }
+  const quotaVars: Record<string, number> = {
+    month_wage: quotaWage ? Number(quotaWage.monthly_wage) : 0,
+    fp_coef: fv('功能点调整系数', 0.1),
+    wage_ratio: fv('运维单价调整系数', 1),
+    months: fv('年·月换算系数', 12),
+  }
+
+  return { wageBases, wage, dailyRate, quotaWage, factors, rates, c1, quota, stations, quotaVars }
+}
+
+/**
+ * 安全表达式求值：只接受 数字 / 变量名 / + - * / ( )，
+ * 先做词法切分再递归下降解析，**不使用 eval / new Function**。
+ * 出现非法字符、未知变量、除零或结果非有限数时返回 null（调用方回退到固定值）。
+ */
+export function evalExpr(expr: string, vars: Record<string, number>): number | null {
+  const src = String(expr || '').replace(/\s+/g, '')
+  if (!src) return null
+  const tokens = src.match(/[A-Za-z_][A-Za-z0-9_]*|\d+(?:\.\d+)?|[+\-*/()]/g)
+  // 切分后必须能拼回原串，否则说明含被静默跳过的非法字符
+  if (!tokens || tokens.join('') !== src) return null
+
+  let i = 0
+  const peek = () => tokens[i]
+  function primary(): number {
+    const t = peek()
+    if (t === undefined) throw new Error('表达式意外结束')
+    if (t === '(') { i++; const v = exprAdd(); if (peek() !== ')') throw new Error('括号不匹配'); i++; return v }
+    if (t === '+') { i++; return primary() }
+    if (t === '-') { i++; return -primary() }
+    if (/^\d/.test(t)) { i++; return Number(t) }
+    i++
+    if (!(t in vars)) throw new Error(`未知变量 ${t}`)
+    return Number(vars[t])
+  }
+  function exprMul(): number {
+    let v = primary()
+    while (peek() === '*' || peek() === '/') {
+      const op = tokens[i++]
+      const r = primary()
+      v = op === '*' ? v * r : v / r
+    }
+    return v
+  }
+  function exprAdd(): number {
+    let v = exprMul()
+    while (peek() === '+' || peek() === '-') {
+      const op = tokens[i++]
+      const r = exprMul()
+      v = op === '+' ? v + r : v - r
+    }
+    return v
+  }
+  try {
+    const v = exprAdd()
+    if (i !== tokens.length) return null
+    return Number.isFinite(v) ? v : null
+  } catch {
+    return null
+  }
+}
+
+/** 定额值：优先按变量化推导式现算，失败或无公式则回退到库里存的固定值 */
+export function quotaValueOf(q: OmQuotaRow, vars: Record<string, number>): number {
+  if (q.formula) {
+    const v = evalExpr(q.formula, vars)
+    if (v != null) return v
+  }
+  return Number(q.quota)
 }
 
 function factorValue(p: OmParams, groupKey: string, name: string, def = 1): number {
@@ -239,21 +341,40 @@ function findStation(stations: OmStationRow[], it: OmItemInput): OmStationRow | 
 interface TailCtx {
   labor: number
   direct: number
+  overhead: number
   pretax: number
   personDays: number
+  tax: number
+  spare: number
 }
 
 function resolveBase(baseNote: string | null | undefined, ctx: TailCtx): { label: string; value: number } {
   const s = String(baseNote || '')
+  // ⚠️ 组合基数必须先判：否则「间接费+直接费」会被后面的「直接费」抢先命中，
+  //    少算一个间接费（源表 F17/F18 = 费率×(F15+F4) 就是这个组合）
+  if (s.includes('间接费') && s.includes('直接费')) {
+    return { label: '间接费+直接费', value: ctx.direct + ctx.overhead }
+  }
+  if (s.includes('直接费') && s.includes('税金')) {
+    return { label: '直接费+税金', value: ctx.direct + ctx.tax }
+  }
+  if (s.includes('备品备件')) return { label: '备品备件', value: ctx.spare }
   if (s.includes('税前')) return { label: '税前造价', value: ctx.pretax }
   if (s.includes('直接费')) return { label: '直接费', value: ctx.direct }
   if (s.includes('人天') || s.includes('天')) return { label: '人天', value: ctx.personDays }
   return { label: '人工费', value: ctx.labor }
 }
 
-function sumGroup(p: OmParams, groupKey: string, ctx: TailCtx, skipYuan = false): OmCostLine[] {
+/** 取某费用组在当前引擎下启用的费率项（engine 不匹配的跳过：两法尾部结构不同） */
+function sumGroup(
+  p: OmParams,
+  groupKey: string,
+  ctx: TailCtx,
+  engine: OmEngine,
+  skipYuan = false
+): OmCostLine[] {
   return p.rates
-    .filter((r) => r.group_key === groupKey)
+    .filter((r) => r.group_key === groupKey && (r.engine === engine || r.engine === 'both'))
     .map((r) => {
       const isYuan = r.unit === 'yuan'
       if (isYuan && skipYuan) return null
@@ -341,34 +462,50 @@ export function calcOm(
       let used: number
       let resolved = true
       let warn: string | undefined
+      let byFormula = false
+      qRow = lookupQuota(p.quota, it.quota_ref)
       if (it.quota_value != null && it.quota_value !== ('' as any)) {
         used = Number(it.quota_value) || 0
-        qRow = lookupQuota(p.quota, it.quota_ref)
+      } else if (!qRow) {
+        used = 0
+        resolved = false
+        warn = `未匹配到定额条目「${it.quota_ref || '（未填）'}」，本行按 0 计`
       } else {
-        qRow = lookupQuota(p.quota, it.quota_ref)
-        if (!qRow) {
-          used = 0
-          resolved = false
-          warn = `未匹配到定额条目「${it.quota_ref || '（未填）'}」，本行按 0 计`
-        } else used = Number(qRow.quota)
+        // 定额值优先按变量化推导式现算（改后台工资/系数即联动），失败则回退固定值
+        used = quotaValueOf(qRow, p.quotaVars)
+        byFormula = !!(qRow.formula && evalExpr(qRow.formula, p.quotaVars) != null)
+        if (!used) warn = `定额条目「${qRow.name}」在源表中定额值为空，本行按 0 计`
       }
-      const kind = it.kind || qRow?.kind || '硬件'
+      // 类别以「定额库中该条目的 kind」为准：源表 7,851 条 J 列公式反查确认，
+      // 名字里带"软件"的站控应用系统等实际走硬件系数，只有 PLC应用系统 / UNITY PRO 走软件系数
+      const kind = qRow?.kind || it.kind || '硬件'
       const kindCoef = kind === '软件' ? softCoef : hardCoef
-      const amount = qty * used * monthFactor * kindCoef
+      // 按功能点计价的条目必须再乘点位数（源表 J = I×E×G16×点位数×12）
+      const pointBased = qRow?.point_based === true
+      const ptCount = pointBased ? Number(it.point_count) || 0 : 0
+      if (pointBased && ptCount <= 0) {
+        resolved = false
+        warn = `「${qRow?.name}」按功能点计价，需填写点位数；未填则本行按 0 计`
+      }
+      const amount = qty * used * monthFactor * kindCoef * (pointBased ? ptCount : 1)
       laborCost += amount
       results.push({
         ...it, usedWorkload: 0, usedQuota: used, correctedWorkload: 0, correctedPrice: 0,
         kindCoef, stationTimeFactor, amount, resolved, warn,
+        quotaByFormula: byFormula, usedPointCount: pointBased ? ptCount : undefined,
       })
     }
   }
 
   // 其他直接费：规费 / 直接非人力成本 / 措施项目费（基数按后台「计费基数」文字判定）
-  const ctx: TailCtx = { labor: laborCost, direct: 0, pretax: 0, personDays: totalPersonDays }
+  const ctx: TailCtx = {
+    labor: laborCost, direct: 0, overhead: 0, pretax: 0,
+    personDays: totalPersonDays, tax: 0, spare: 0,
+  }
   const otherDirect = [
-    ...sumGroup(p, 'regulation', ctx),
-    ...sumGroup(p, 'nonlabor', ctx),
-    ...sumGroup(p, 'measure', ctx),
+    ...sumGroup(p, 'regulation', ctx, engine),
+    ...sumGroup(p, 'nonlabor', ctx, engine),
+    ...sumGroup(p, 'measure', ctx, engine),
   ]
   const otherDirectTotal = otherDirect.reduce((a, l) => a + l.amount, 0)
   const directSubtotal = laborCost + otherDirectTotal
@@ -389,17 +526,30 @@ export function calcOm(
   const directTotal = directSubtotal + (mgmtService?.amount || 0)
 
   ctx.direct = directTotal
-  const indirect = sumGroup(p, 'overhead', ctx).concat(sumGroup(p, 'profit', ctx))
+
+  // 间接费（企业管理费）：源表基数是「直接费」（F16 = 0.12×F4）——
+  // 先算出来写进 ctx，供后面利润/税金的「间接费+直接费」组合基数取用
+  const overhead = sumGroup(p, 'overhead', ctx, engine)
+  ctx.overhead = overhead.reduce((a, l) => a + l.amount, 0)
+
+  // 利润：源表基数是「间接费+直接费」（F17 = D17×(F15+F4)）
+  const profit = sumGroup(p, 'profit', ctx, engine)
+  const indirect = [...overhead, ...profit]
   const indirectTotal = indirect.reduce((a, l) => a + l.amount, 0)
   const pretax = directTotal + indirectTotal
 
   ctx.pretax = pretax
-  const taxLines = sumGroup(p, 'tax', ctx)
+  const taxLines = sumGroup(p, 'tax', ctx, engine)
   const tax = taxLines[0] || null
-  const spareLines = sumGroup(p, 'spare', ctx)
+  ctx.tax = tax?.amount || 0
+  const spareLines = sumGroup(p, 'spare', ctx, engine)
   const spare = spareLines[0] || null
+  ctx.spare = spare?.amount || 0
+  // 以其他费用项为基数的费用（如定额法暂列金，源表基数是备品备件）
+  const extra = sumGroup(p, 'provisional', ctx, engine)
+  const extraTotal = extra.reduce((a, l) => a + l.amount, 0)
 
-  const total = pretax + (tax?.amount || 0) + (spare?.amount || 0)
+  const total = pretax + (tax?.amount || 0) + (spare?.amount || 0) + extraTotal
 
   const ENGINE_LABEL: Record<OmEngine, string> = { c1: 'C.1 工作量法', quota: '定额单价法' }
   const wageLabel = p.wage
@@ -421,6 +571,8 @@ export function calcOm(
     pretax,
     tax,
     spare,
+    extra,
+    extraTotal,
     total,
     meta: {
       wageBaseLabel: wageLabel,
@@ -433,6 +585,7 @@ export function calcOm(
       softCoef,
       monthFactor,
       engineLabel: ENGINE_LABEL[engine],
+      quotaVars: p.quotaVars,
     },
   }
 }

@@ -19,7 +19,10 @@ interface Row {
   workload: number | null
   quota_ref: string
   quota_value: number | null
+  /** 硬件/软件：留空则以定额库中该条目的类别为准（源表实测口径） */
   kind: string
+  /** 按功能点计价的条目（PLC应用系统 / UNITY PRO）必填 */
+  point_count: number | null
   billable: boolean
   note: string
 }
@@ -70,7 +73,8 @@ async function loadSample() {
       workload: it.billable ? it.workload : null,
       quota_ref: it.name,
       quota_value: null,
-      kind: '硬件',
+      kind: '',
+      point_count: null,
       billable: !!it.billable,
       note: it.billable ? '' : it.note,
     }))
@@ -93,7 +97,7 @@ function addRow() {
     station: engine.value === 'c1' ? '指挥调度中心' : '',
     sheet_no: 1, category: '', no: '', name: '', unit: '', qty: 1,
     category_ref: '', workload: null, quota_ref: '', quota_value: null,
-    kind: '硬件', billable: true, note: '',
+    kind: '', point_count: null, billable: true, note: '',
   })
 }
 
@@ -125,7 +129,8 @@ async function calculate() {
         workload: r.workload,
         quota_ref: r.quota_ref,
         quota_value: r.quota_value,
-        kind: r.kind,
+        kind: r.kind || undefined,
+        point_count: r.point_count,
         billable: r.billable,
         note: r.note,
       })),
@@ -151,7 +156,7 @@ function switchEngine(v: Engine) {
       workload: v === 'c1' ? r.workload : null,
       quota_ref: v === 'quota' ? (r.quota_ref || r.name) : '',
       quota_value: null,
-      kind: '硬件',
+      kind: '',
     }))
     calculate()
   }
@@ -310,6 +315,7 @@ onMounted(loadParams)
                     <th class="px-3 py-2 font-medium">定额条目</th>
                     <th class="px-3 py-2 text-right font-medium">定额值</th>
                     <th class="px-3 py-2 font-medium">类别</th>
+                    <th class="px-3 py-2 text-right font-medium">点位数</th>
                   </template>
                   <th class="px-3 py-2 text-right font-medium">金额(元)</th>
                   <th class="sticky right-0 bg-gray-50 px-3 py-2 text-center font-medium">操作</th>
@@ -317,7 +323,7 @@ onMounted(loadParams)
               </thead>
               <tbody>
                 <tr v-if="!rows.length">
-                  <td :colspan="engine === 'c1' ? 8 : 9" class="px-4 py-12 text-center text-sm text-gray-400">
+                  <td :colspan="engine === 'c1' ? 8 : 10" class="px-4 py-12 text-center text-sm text-gray-400">
                     还没有清单。点右上角「载入示例清单」看效果，或「新增一行」手工录入。
                   </td>
                 </tr>
@@ -354,9 +360,21 @@ onMounted(loadParams)
                     </td>
                     <td class="px-3 py-1.5">
                       <select v-model="r.kind" class="w-16 rounded border border-transparent bg-transparent px-1 py-1 text-xs hover:border-gray-200 focus:border-primary focus:bg-white">
+                        <option value="">按定额库</option>
                         <option value="硬件">硬件</option>
                         <option value="软件">软件</option>
                       </select>
+                    </td>
+                    <td class="px-3 py-1.5 text-right">
+                      <input
+                        v-model.number="r.point_count"
+                        type="number"
+                        step="1"
+                        placeholder="按功能点"
+                        class="w-20 rounded border border-transparent bg-transparent px-1 py-1 text-right text-xs hover:border-gray-200 focus:border-primary focus:bg-white"
+                        :class="result?.items?.[i]?.usedPointCount !== undefined && !result.items[i].usedPointCount ? 'border-amber-300' : ''"
+                        title="按功能点计价的条目（PLC应用系统 / UNITY PRO）必填，否则该行按 0 计"
+                      >
                     </td>
                   </template>
                   <td class="px-3 py-1.5 text-right font-mono text-xs text-gray-700">
@@ -427,6 +445,10 @@ onMounted(loadParams)
                 <dt class="text-gray-600">{{ result.spare.label }}<span class="ml-1 text-[10px] text-gray-300">×{{ result.spare.rate }}</span></dt>
                 <dd class="font-mono text-gray-800">{{ fmt(result.spare.amount) }}</dd>
               </div>
+              <div v-for="l in (result.extra || [])" :key="l.key" class="flex items-center justify-between">
+                <dt class="text-gray-600">{{ l.label }}<span class="ml-1 text-[10px] text-gray-300">×{{ l.rate }}</span></dt>
+                <dd class="font-mono text-gray-800">{{ fmt(l.amount) }}</dd>
+              </div>
               <div class="flex items-center justify-between border-t-2 border-gray-200 pt-2">
                 <dt class="font-semibold text-gray-800">合计</dt>
                 <dd class="font-mono font-bold text-primary">{{ fmt(result.total) }}</dd>
@@ -447,6 +469,9 @@ onMounted(loadParams)
                   <div class="flex justify-between"><dt class="text-gray-400">硬件取费系数</dt><dd class="text-gray-700">{{ result.meta.hardCoef }}</dd></div>
                   <div class="flex justify-between"><dt class="text-gray-400">软件取费系数</dt><dd class="text-gray-700">{{ result.meta.softCoef }}</dd></div>
                   <div class="flex justify-between"><dt class="text-gray-400">年·月换算</dt><dd class="text-gray-700">×{{ result.meta.monthFactor }}</dd></div>
+                  <div class="flex justify-between"><dt class="text-gray-400">定额法人工费</dt><dd class="text-gray-700">{{ fmt(result.meta.quotaVars?.month_wage) }} 元/月</dd></div>
+                  <div class="flex justify-between"><dt class="text-gray-400">运维单价调整系数</dt><dd class="text-gray-700">{{ result.meta.quotaVars?.wage_ratio }}</dd></div>
+                  <div class="flex justify-between"><dt class="text-gray-400">功能点调整系数</dt><dd class="text-gray-700">{{ result.meta.quotaVars?.fp_coef }}</dd></div>
                 </template>
               </dl>
               <p class="mt-2 text-[11px] leading-relaxed text-gray-400">{{ result.meta.wageBaseLabel }}</p>

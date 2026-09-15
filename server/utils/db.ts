@@ -480,6 +480,7 @@ CREATE TABLE IF NOT EXISTS om_wage_base (
   monthly_wage  DOUBLE PRECISION NOT NULL DEFAULT 0,   -- 月均工资(元)
   work_days     DOUBLE PRECISION NOT NULL DEFAULT 21.75, -- 月计薪天数
   is_default    BOOLEAN NOT NULL DEFAULT false,        -- 测算页默认选中的基数
+  usage         VARCHAR(16) NOT NULL DEFAULT 'c1',     -- 用途：c1 = C.1法锚点 / quota = 定额法锚点 / ref = 仅参考
   source        TEXT,
   note          TEXT,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -789,9 +790,9 @@ CREATE TABLE IF NOT EXISTS kv (
     if (omProbe === 0) {
       for (const w of omWageBases) {
         await pool.query(
-          `INSERT INTO om_wage_base (year, region, industry, monthly_wage, work_days, is_default, source, note)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-          [w.year, w.region, w.industry, w.monthly_wage, w.work_days, w.is_default, w.source, w.note]
+          `INSERT INTO om_wage_base (year, region, industry, monthly_wage, work_days, is_default, usage, source, note)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+          [w.year, w.region, w.industry, w.monthly_wage, w.work_days, w.is_default, w.usage, w.source, w.note]
         )
       }
       for (const f of omFactors) {
@@ -803,9 +804,9 @@ CREATE TABLE IF NOT EXISTS kv (
       }
       for (const r of omRateItems) {
         await pool.query(
-          `INSERT INTO om_rate_items (group_key, group_name, name, rate, unit, base_note, description, seq)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-          [r.group_key, r.group_name, r.name, r.rate, r.unit, r.base_note, r.description, r.seq]
+          `INSERT INTO om_rate_items (group_key, group_name, engine, name, rate, unit, base_note, description, seq, is_active)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+          [r.group_key, r.group_name, r.engine, r.name, r.rate, r.unit, r.base_note, r.description, r.seq, r.is_active !== false]
         )
       }
       for (const c of omC1Benchmarks) {
@@ -817,9 +818,9 @@ CREATE TABLE IF NOT EXISTS kv (
       }
       for (const q of omQuotaItems) {
         await pool.query(
-          `INSERT INTO om_quota_items (name, unit, quota, kind, source, note, seq)
-           VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-          [q.name, q.unit, q.quota, q.kind, q.source, q.note, q.seq]
+          `INSERT INTO om_quota_items (name, unit, quota, kind, point_based, formula, formula_raw, source, note, seq)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+          [q.name, q.unit, q.quota, q.kind, q.point_based, q.formula, q.formula_raw, q.source, q.note, q.seq]
         )
       }
       for (const s of omStationTypes) {
@@ -830,6 +831,10 @@ CREATE TABLE IF NOT EXISTS kv (
         )
       }
       console.log(`[seed] 运维测算参数库已灌：工资基数${omWageBases.length} 因子${omFactors.length} 费率${omRateItems.length} C1基准${omC1Benchmarks.length} 定额${omQuotaItems.length} 站点${omStationTypes.length}`)
+    } else if (omSeeded !== OM_SEED_VERSION) {
+      // 参数表已有数据但种子版本落后（老库升级）→ 做一次增量修复：
+      // 只改「按源表口径确实错了」的字段，quota / rate / value 等被后台改过的数值一律不动。
+      await repairOmSeed()
     }
     if (omSeeded !== OM_SEED_VERSION) {
       await pool.query(
@@ -864,6 +869,74 @@ CREATE TABLE IF NOT EXISTS kv (
       console.log(`[init] 已确保 ${initUser} 为管理员（user_roles 已关联）`)
     }
   }
+}
+
+/**
+ * om 参数库「老库升级」增量修复（由 OM_SEED_VERSION 号驱动，幂等）
+ *
+ * 2026-09-15 对两本测算书做了逐单元格公式全集普查，发现 v1 种子有几处与源表口径不符，
+ * 这里按源表实测结果修正；**绝不覆盖后台改过的数值**（quota / rate / value / monthly_wage 全不动）：
+ *
+ *   1. om_quota_items.kind —— v1 是「按设备名有没有'软件'字样」臆测的；源表 7,851 条 J 列公式
+ *      反查结果：只有 PLC应用系统(128条) / UNITY PRO(7条) 引用软件系数 G16，其余 747 种全走硬件 G17。
+ *      所以「站控应用系统」「数据通信软件」这些名字里带"软件"的，实际用的是硬件系数。
+ *   2. om_quota_items 补 point_based / formula / formula_raw —— 定额值本身是公式算出来的
+ *      （1200/12*D5、D3/176*D4 等），存终值会导致改工资基数不联动。
+ *   3. om_rate_items 补 engine 列，并修正「计费基数」：源表企业管理费基数是**直接费**
+ *      （F16 = 0.12×F4），利润与税金基数是**间接费+直接费**（F17/F18 = 费率×(F15+F4)）。
+ *   4. om_rate_items 补定额法专属的税金/备品备件/暂列金三条；把源表「列而未用」的
+ *      措施项目费(D33/D34) 与 A 法备品备件(F19 无公式) 关掉，默认不参与计算。
+ *   5. om_wage_base 补 usage —— 两法工资锚点不同（C.1 法 11436.9167 / 定额法 136833÷12=11402.75），
+ *      分开标注后引擎各取所需，也便于在后台对比。
+ */
+async function repairOmSeed(): Promise<void> {
+  let nQuota = 0
+  let nRate = 0
+  let nRateIns = 0
+  let nWage = 0
+
+  for (const q of omQuotaItems) {
+    const r = await pool.query(
+      `UPDATE om_quota_items
+          SET kind = $1, point_based = $2, formula = $3, formula_raw = $4, updated_at = now()
+        WHERE name = $5
+          AND (kind IS DISTINCT FROM $1 OR point_based IS DISTINCT FROM $2
+               OR formula IS DISTINCT FROM $3 OR formula_raw IS DISTINCT FROM $4)`,
+      [q.kind, q.point_based, q.formula, q.formula_raw, q.name]
+    )
+    nQuota += r.rowCount || 0
+  }
+
+  for (const r of omRateItems) {
+    const upd = await pool.query(
+      `UPDATE om_rate_items
+          SET group_name = $1, engine = $2, base_note = $3, description = $4,
+              seq = $5, is_active = $6, updated_at = now()
+        WHERE group_key = $7 AND name = $8`,
+      [r.group_name, r.engine, r.base_note, r.description, r.seq,
+       r.is_active !== false, r.group_key, r.name]
+    )
+    if (upd.rowCount === 0) {
+      await pool.query(
+        `INSERT INTO om_rate_items (group_key, group_name, engine, name, rate, unit, base_note, description, seq, is_active)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT DO NOTHING`,
+        [r.group_key, r.group_name, r.engine, r.name, r.rate, r.unit, r.base_note,
+         r.description, r.seq, r.is_active !== false]
+      )
+      nRateIns++
+    } else nRate += upd.rowCount || 0
+  }
+
+  for (const w of omWageBases) {
+    const r = await pool.query(
+      `UPDATE om_wage_base SET usage = $1, updated_at = now()
+        WHERE industry = $2 AND usage IS DISTINCT FROM $1`,
+      [w.usage, w.industry]
+    )
+    nWage += r.rowCount || 0
+  }
+
+  console.log(`[repair] 运维参数库已修订：定额类别/公式 ${nQuota} 条、费率 ${nRate} 条（新增 ${nRateIns} 条）、工资基数 ${nWage} 条`)
 }
 
 export default db

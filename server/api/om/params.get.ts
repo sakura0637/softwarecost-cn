@@ -18,13 +18,20 @@ export default defineEventHandler(async (event) => {
       work_days: Number(w.work_days),
       daily_rate: Number(w.monthly_wage) / (Number(w.work_days) || 21.75),
       is_default: w.is_default,
+      usage: w.usage,
       source: w.source,
       note: w.note,
     })),
     wage: p.wage
       ? { id: p.wage.id, label: `${p.wage.year || ''}年 ${p.wage.industry || ''}`, monthly_wage: Number(p.wage.monthly_wage), work_days: Number(p.wage.work_days) }
       : null,
+    /** 定额法工资锚点（usage='quota'）：与 C.1 法锚点不同，页面单独展示 */
+    quotaWage: p.quotaWage
+      ? { id: p.quotaWage.id, industry: p.quotaWage.industry, monthly_wage: Number(p.quotaWage.monthly_wage) }
+      : null,
     dailyRate: p.dailyRate,
+    /** 定额推导式变量表（month_wage / fp_coef / wage_ratio / months） */
+    quotaVars: p.quotaVars,
     factors: p.factors,
     rates: p.rates,
     c1: p.c1,

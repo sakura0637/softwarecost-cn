@@ -148,7 +148,8 @@ export const DATA_TABLES: DataTableConf[] = [
     category: 'om',
     pk: 'id',
     pkAuto: true,
-    readonly: ['created_at', 'updated_at'],
+    // formula_raw 是源表原始公式，仅作追溯参考，运行时不参与计算（真正生效的是 formula）
+    readonly: ['created_at', 'updated_at', 'formula_raw'],
   },
   {
     key: 'om_station_types',
@@ -275,6 +276,7 @@ export const DATA_LABELS: Record<string, string> = {
   'om_wage_base.is_default': '默认基数',
   'om_wage_base.source': '来源',
   'om_wage_base.note': '说明',
+  'om_wage_base.usage': '用途',
   'om_wage_base.created_at': '创建时间',
   'om_wage_base.updated_at': '更新时间',
 
@@ -296,6 +298,7 @@ export const DATA_LABELS: Record<string, string> = {
   'om_rate_items.id': '编号',
   'om_rate_items.group_key': '分组',
   'om_rate_items.group_name': '分组名称',
+  'om_rate_items.engine': '适用引擎',
   'om_rate_items.name': '费用名称',
   'om_rate_items.rate': '费率/金额',
   'om_rate_items.unit': '取值类型',
@@ -323,6 +326,9 @@ export const DATA_LABELS: Record<string, string> = {
   'om_quota_items.unit': '单位',
   'om_quota_items.quota': '定额值(元/月)',
   'om_quota_items.kind': '类别',
+  'om_quota_items.point_based': '按点位数计价',
+  'om_quota_items.formula': '推导式(可编辑)',
+  'om_quota_items.formula_raw': '源表公式(参考)',
   'om_quota_items.source': '来源',
   'om_quota_items.note': '说明',
   'om_quota_items.seq': '排序',
@@ -359,6 +365,8 @@ export const DATA_ENUMS: Record<string, Record<string, string>> = {
   'om_factors.unit': { ratio: '系数', coef: '等级系数', yuan: '金额(元)', person_day: '人天' },
   'om_factors.calc': { multiply: '连乘', product: '分组合计', weighted: '加权平均', sum: '求和' },
   'om_rate_items.unit': { ratio: '费率', yuan: '金额(元)' },
+  'om_rate_items.engine': { c1: 'C.1 工作量法', quota: '定额单价法', both: '两法通用' },
+  'om_wage_base.usage': { c1: 'C.1 法锚点', quota: '定额法锚点', ref: '仅参考' },
   'om_quota_items.kind': { 硬件: '硬件', 软件: '软件' },
   'om_projects.engine': { c1: 'C.1 工作量法', quota: '定额单价法' },
 }
