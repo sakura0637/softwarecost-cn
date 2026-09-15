@@ -160,6 +160,16 @@ export const DATA_TABLES: DataTableConf[] = [
     readonly: ['created_at', 'updated_at'],
   },
   {
+    // 设备价格库 → 运维取费映射：测算页从设备库取数时，靠这张表把设备的
+    // 自然属性（工程监控 / 实体环境…）翻成 C.1 取费类别（UPS五级 / 交换机…）。
+    key: 'om_device_c1_map',
+    label: '设备取费映射',
+    category: 'om',
+    pk: 'id',
+    pkAuto: true,
+    readonly: ['created_at', 'updated_at'],
+  },
+  {
     key: 'om_projects',
     label: '运维测算项目',
     category: 'om',
@@ -357,6 +367,21 @@ export const DATA_LABELS: Record<string, string> = {
   'om_projects.result_json': '计算结果',
   'om_projects.created_at': '创建时间',
   'om_projects.updated_at': '更新时间',
+
+  // 设备价格库 → 运维取费映射（决定「设备库」里的设备按哪个 C.1 类别计费）
+  'om_device_c1_map.id': '编号',
+  'om_device_c1_map.match_type': '匹配方式',
+  'om_device_c1_map.match_value': '匹配内容',
+  'om_device_c1_map.exclude_kw': '排除词(英文逗号分隔)',
+  'om_device_c1_map.c1_category': 'C.1取费类别',
+  'om_device_c1_map.quota_ref': '定额条目名',
+  'om_device_c1_map.billable': '计取运维费',
+  'om_device_c1_map.priority': '优先级(小者优先)',
+  'om_device_c1_map.seq': '排序',
+  'om_device_c1_map.is_active': '启用',
+  'om_device_c1_map.note': '说明',
+  'om_device_c1_map.created_at': '创建时间',
+  'om_device_c1_map.updated_at': '更新时间',
 }
 
 // 枚举列的可读取值（数据维护页把存库的英文/编码渲染成中文下拉）
@@ -369,6 +394,12 @@ export const DATA_ENUMS: Record<string, Record<string, string>> = {
   'om_wage_base.usage': { c1: 'C.1 法锚点', quota: '定额法锚点', ref: '仅参考' },
   'om_quota_items.kind': { 硬件: '硬件', 软件: '软件' },
   'om_projects.engine': { c1: 'C.1 工作量法', quota: '定额单价法' },
+  'om_device_c1_map.match_type': {
+    name: '设备名精确匹配',
+    keyword: '设备名关键词匹配',
+    subcategory: '按子分类匹配',
+    category: '按顶层分类匹配',
+  },
 }
 
 export function enumFor(table: string, col: string): Record<string, string> | undefined {

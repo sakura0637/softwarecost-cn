@@ -12,6 +12,8 @@ useHead({ title: '运维费用测算 · 水网数智造价系统' })
 const { api } = useAuth()
 
 type Engine = 'c1' | 'quota'
+/** 清单来源：sample = 源表《C1取费对照表》示例；devices = 本系统「设备价格库」真实台账 */
+type Source = 'sample' | 'devices'
 
 interface Row {
   station: string
@@ -31,9 +33,15 @@ interface Row {
   point_count: number | null
   billable: boolean
   note: string
+  /** 设备库来源专用：该行是否已匹配到取费参数（未匹配则高亮待确认） */
+  matched?: boolean
 }
 
 const engine = ref<Engine>('c1')
+const source = ref<Source>('sample')
+const deviceStations = ref<string[]>([])
+const deviceStation = ref('')
+const deviceStats = ref<any>(null)
 const wageBaseId = ref<number | null>(null)
 const rows = ref<Row[]>([])
 const scaleByStation = ref(true)
@@ -62,40 +70,88 @@ async function loadParams() {
   }
 }
 
-async function loadSample() {
+// 按当前来源载入清单，载完立即测算
+async function loadData() {
   loading.value = true
   errorMsg.value = ''
   try {
-    if (!sample.value) sample.value = await api('/api/om/sample')
-    rows.value = sample.value.items.map((it: any) => ({
-      station: it.station || '',
-      sheet_no: it.sheet_no,
-      category: it.category,
-      no: it.no,
-      name: it.name,
-      unit: it.unit || '',
-      qty: (Number(it.qty) || 0) * (scaleByStation.value ? Number(it.station_qty) || 1 : 1),
-      category_ref: it.category_ref || '',
-      workload: it.billable ? it.workload : null,
-      quota_ref: it.name,
-      quota_value: null,
-      kind: '',
-      point_count: null,
-      billable: !!it.billable,
-      note: it.billable ? '' : it.note,
-    }))
+    if (source.value === 'devices') await loadFromDevices()
+    else await loadFromSample()
     await calculate()
   } catch (e: any) {
-    errorMsg.value = e?.data?.statusMessage || e?.message || '示例载入失败'
+    errorMsg.value = e?.data?.statusMessage || e?.message || '清单载入失败'
   } finally {
     loading.value = false
   }
+}
+
+/** 来源一：源表《C1取费对照表》示例清单（用于校验引擎口径） */
+async function loadFromSample() {
+  if (!sample.value) sample.value = await api('/api/om/sample')
+  rows.value = sample.value.items.map((it: any) => ({
+    station: it.station || '',
+    sheet_no: it.sheet_no,
+    category: it.category,
+    no: it.no,
+    name: it.name,
+    unit: it.unit || '',
+    qty: (Number(it.qty) || 0) * (scaleByStation.value ? Number(it.station_qty) || 1 : 1),
+    category_ref: it.category_ref || '',
+    workload: it.billable ? it.workload : null,
+    quota_ref: it.name,
+    quota_value: null,
+    kind: '',
+    point_count: null,
+    billable: !!it.billable,
+    note: it.billable ? '' : it.note,
+    matched: true,
+  }))
+}
+
+/** 来源二：本系统「设备价格库」真实设备台账（按管理处取数，数量即台账数量，不做站点放大） */
+async function loadFromDevices() {
+  if (!deviceStations.value.length) {
+    const meta: any = await api('/api/om/devices')
+    deviceStations.value = meta.stations || []
+    if (!deviceStation.value) deviceStation.value = deviceStations.value[0] || ''
+  }
+  if (!deviceStation.value) {
+    rows.value = []
+    deviceStats.value = null
+    return
+  }
+  const qs = `station=${encodeURIComponent(deviceStation.value)}&engine=${engine.value}`
+  const res: any = await api(`/api/om/devices?${qs}`)
+  deviceStations.value = res.stations || deviceStations.value
+  deviceStats.value = res.stats || null
+  rows.value = (res.items || []).map((it: any) => ({
+    // 站点列显示子站（设备实际所在站），管理处已在顶部选定
+    station: it.subsite || it.station || '',
+    sheet_no: null,
+    category: it.category || '',
+    no: String(it.seq ?? ''),
+    name: it.name || '',
+    unit: it.unit || '',
+    qty: Number(it.qty) || 0,
+    category_ref: it.c1_category || '',
+    workload: null,
+    quota_ref: it.quota_ref || '',
+    quota_value: null,
+    kind: '',
+    point_count: null,
+    // 未匹配的行仍按「应计费」提交 → 引擎会按 0 计入并列入下方待确认清单，
+    // 不会被静默丢掉（这是「宁可留待人工确认，也不擅自判不计费」的口径）
+    billable: true,
+    note: it.matched ? '' : '未匹配取费参数，待确认',
+    matched: !!it.matched,
+  }))
 }
 
 function clearRows() {
   rows.value = []
   result.value = null
   unresolved.value = []
+  deviceStats.value = null
 }
 
 function addRow() {
@@ -103,7 +159,7 @@ function addRow() {
     station: engine.value === 'c1' ? '指挥调度中心' : '',
     sheet_no: 1, category: '', no: '', name: '', unit: '', qty: 1,
     category_ref: '', workload: null, quota_ref: '', quota_value: null,
-    kind: '', point_count: null, billable: true, note: '',
+    kind: '', point_count: null, billable: true, note: '', matched: true,
   })
 }
 
@@ -154,7 +210,12 @@ async function calculate() {
 function switchEngine(v: Engine) {
   if (engine.value === v) return
   engine.value = v
-  // 换引擎后原清单的引用字段不通用，清空结果并提示重算
+  // 设备库来源：两法各自的匹配结果不同，重新取一次数（接口会按新引擎算 matched）
+  if (source.value === 'devices') {
+    if (rows.value.length) loadData()
+    return
+  }
+  // 示例清单：换引擎后原清单的引用字段不通用，清空结果并提示重算
   if (rows.value.length) {
     rows.value = rows.value.map((r) => ({
       ...r,
@@ -166,6 +227,14 @@ function switchEngine(v: Engine) {
     }))
     calculate()
   }
+}
+
+/** 切换清单来源：清空旧清单，设备库来源自动取第一个管理处 */
+function switchSource(v: Source) {
+  if (source.value === v) return
+  source.value = v
+  clearRows()
+  if (v === 'devices') loadData()
 }
 
 watch(wageBaseId, () => { loadParams().then(() => rows.value.length && calculate()) })
@@ -219,8 +288,8 @@ onMounted(loadParams)
         <p class="mt-1 text-sm text-gray-500">{{ engineHint }}</p>
       </div>
       <div class="flex flex-wrap items-center gap-2">
-        <button class="btn-outline !px-4 !py-2 !text-sm" :disabled="loading" @click="loadSample">
-          {{ loading ? '载入中…' : '载入示例清单' }}
+        <button class="btn-outline !px-4 !py-2 !text-sm" :disabled="loading" @click="loadData">
+          {{ loading ? '载入中…' : (source === 'devices' ? '载入设备库清单' : '载入示例清单') }}
         </button>
         <button class="rounded-lg border border-gray-200 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50" @click="clearRows">
           清空
@@ -236,6 +305,35 @@ onMounted(loadParams)
     <!-- 引擎 + 基数 -->
     <div class="card mb-5 !p-4">
       <div class="flex flex-wrap items-center gap-x-8 gap-y-3">
+        <!-- 清单来源：示例 = 源表对照表；设备库 = 本系统真实台账 -->
+        <div class="flex items-center gap-2">
+          <span class="text-sm text-gray-500">清单来源</span>
+          <div class="inline-flex rounded-lg bg-gray-100 p-0.5">
+            <button
+              class="rounded-md px-3 py-1.5 text-sm font-medium transition"
+              :class="source === 'sample' ? 'bg-white text-primary shadow-sm' : 'text-gray-500'"
+              @click="switchSource('sample')"
+            >
+              示例清单
+            </button>
+            <button
+              class="rounded-md px-3 py-1.5 text-sm font-medium transition"
+              :class="source === 'devices' ? 'bg-white text-primary shadow-sm' : 'text-gray-500'"
+              @click="switchSource('devices')"
+            >
+              设备价格库
+            </button>
+          </div>
+          <select
+            v-if="source === 'devices'"
+            v-model="deviceStation"
+            class="rounded-lg border border-gray-200 px-3 py-1.5 text-sm"
+            @change="loadData"
+          >
+            <option v-for="s in deviceStations" :key="s" :value="s">{{ s }}</option>
+          </select>
+        </div>
+
         <div class="flex items-center gap-2">
           <span class="text-sm text-gray-500">测算引擎</span>
           <div class="inline-flex rounded-lg bg-gray-100 p-0.5">
@@ -266,8 +364,18 @@ onMounted(loadParams)
           </span>
         </div>
 
-        <label class="flex items-center gap-2 text-sm text-gray-600">
-          <input v-model="scaleByStation" type="checkbox" class="h-4 w-4 rounded border-gray-300" @change="rows.length && loadSample()">
+        <label
+          class="flex items-center gap-2 text-sm"
+          :class="source === 'devices' ? 'text-gray-300' : 'text-gray-600'"
+          :title="source === 'devices' ? '设备库的数量就是各站实际台账数量，无需再放大' : ''"
+        >
+          <input
+            v-model="scaleByStation"
+            type="checkbox"
+            :disabled="source === 'devices'"
+            class="h-4 w-4 rounded border-gray-300"
+            @change="source === 'sample' && rows.length && loadData()"
+          >
           数量按站点数放大
         </label>
 
@@ -300,7 +408,15 @@ onMounted(loadParams)
       <div class="xl:col-span-2">
         <div class="card !p-0">
           <div class="flex items-center justify-between border-b border-gray-100 px-5 py-3">
-            <h2 class="text-base font-semibold text-gray-800">设备清单</h2>
+            <div class="flex items-center gap-3">
+              <h2 class="text-base font-semibold text-gray-800">设备清单</h2>
+              <span v-if="source === 'devices' && deviceStats" class="text-xs text-gray-400">
+                共 <b class="text-gray-700">{{ deviceStats.total }}</b> 行 ·
+                已匹配 <b class="text-emerald-600">{{ deviceStats.matched }}</b> ·
+                待确认 <b :class="deviceStats.unmatched ? 'text-amber-600' : 'text-gray-700'">{{ deviceStats.unmatched }}</b>
+                <span class="ml-1 text-gray-300">（待确认行按 0 计入，见右侧提示）</span>
+              </span>
+            </div>
             <div class="flex items-center gap-2">
               <button class="text-sm text-primary hover:underline" @click="addRow">+ 新增一行</button>
             </div>
@@ -330,12 +446,23 @@ onMounted(loadParams)
               <tbody>
                 <tr v-if="!rows.length">
                   <td :colspan="engine === 'c1' ? 8 : 10" class="px-4 py-12 text-center text-sm text-gray-400">
-                    还没有清单。点右上角「载入示例清单」看效果，或「新增一行」手工录入。
+                    <template v-if="source === 'devices'">该管理处暂无设备，或尚未选择管理处。</template>
+                    <template v-else>还没有清单。上方「清单来源」可切到「设备价格库」按管理处载入真实台账，也可点右上角「载入示例清单」看效果，或「新增一行」手工录入。</template>
                   </td>
                 </tr>
-                <tr v-for="(r, i) in rows" :key="i" class="border-b border-gray-50 hover:bg-gray-50/60" :class="{ 'bg-gray-50/40 text-gray-400': !r.billable }">
+                <tr
+                  v-for="(r, i) in rows"
+                  :key="i"
+                  class="border-b border-gray-50 hover:bg-gray-50/60"
+                  :class="{ 'bg-gray-50/40 text-gray-400': !r.billable, 'bg-amber-50/50': r.billable && r.matched === false }"
+                >
                   <td class="px-3 py-1.5">
-                    <select v-model="r.station" class="w-32 rounded border border-transparent bg-transparent px-1 py-1 text-xs hover:border-gray-200 focus:border-primary focus:bg-white">
+                    <span
+                      v-if="source === 'devices'"
+                      class="block w-32 truncate text-xs text-gray-600"
+                      :title="r.station"
+                    >{{ r.station }}</span>
+                    <select v-else v-model="r.station" class="w-32 rounded border border-transparent bg-transparent px-1 py-1 text-xs hover:border-gray-200 focus:border-primary focus:bg-white">
                       <option value="">—</option>
                       <option v-for="s in (params?.stations || [])" :key="s.code" :value="s.name">{{ s.name }}</option>
                     </select>

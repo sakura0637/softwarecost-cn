@@ -1,8 +1,11 @@
 // 离线验证：用种子参数 + 示例清单跑一遍双引擎，与源表口径对数
 import { calcOm, quotaValueOf, type OmParams, type OmItemInput } from '../server/utils/omCalculator'
+import { matchDevice, matchC1Rule, matchQuotaItem, buildQuotaIndex } from '../server/utils/omDeviceMatcher'
+import { readFileSync, existsSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   omWageBases, omFactors, omRateItems, omC1Benchmarks, omQuotaItems,
-  omStationTypes, omSampleItems,
+  omStationTypes, omSampleItems, omDeviceC1Maps,
 } from '../server/seed/omData'
 
 const wage = omWageBases.find((w) => w.is_default)!
@@ -130,6 +133,51 @@ console.log(`  未填点位数：金额=${rSoftNoPt.items[0].amount.toFixed(2)} 
   ` 提示="${rSoftNoPt.items[0].warn || ''}"`)
 console.log('')
 
+// ── 设备价格库取费匹配（测算页「按管理处载入真实台账」的核心）──
+const rules = omDeviceC1Maps as any[]
+const quotaIndex = buildQuotaIndex(omQuotaItems as any)
+
+console.log('══ 设备价格库取费匹配 ══')
+console.log(`  映射规则 ${rules.length} 条（精确名 ${rules.filter((r) => r.match_type === 'name').length}` +
+  ` / 关键词 ${rules.filter((r) => r.match_type === 'keyword').length}）`)
+
+const devSeedFile = join(process.cwd(), 'server', 'seed', 'device_prices_seed.json')
+let devRows: any[] = []
+if (existsSync(devSeedFile)) {
+  try { devRows = JSON.parse(readFileSync(devSeedFile, 'utf-8')) } catch { devRows = [] }
+}
+let devQuotaHit = 0
+let devC1Hit = 0
+for (const r of devRows) {
+  const m = matchDevice(r.name, quotaIndex, rules, 'quota')
+  if (m.quota_ref) devQuotaHit++
+  if (matchC1Rule(r.name, rules)?.c1_category) devC1Hit++
+}
+if (devRows.length) {
+  console.log(`  设备库 ${devRows.length} 行 → 定额法可匹配 ${devQuotaHit} 行（${(devQuotaHit / devRows.length * 100).toFixed(1)}%）` +
+    `、C.1 法可映射 ${devC1Hit} 行（${(devC1Hit / devRows.length * 100).toFixed(1)}%）`)
+}
+
+const c1of = (n: string) => matchC1Rule(n, rules)?.c1_category || ''
+const mapCases: Array<[string, string]> = [
+  ['双电源进线屏（GCS）', '借UPS中值'],
+  ['UPS配电柜', '借UPS中值'],
+  ['UPS电源(3KVA)', 'UPS五级'],
+  ['工业交换机（不配光模块）', '交换机'],
+  ['精密空调', '精密空调'],
+  ['精密空调隔离开关箱（内装63A隔离开关一个，自动空气开关2个）', ''],
+  ['非冗余PLC控制柜（含柜内温湿度控制器、中间继电器、声光报警装置等）', ''],
+  ['服务器机架', ''],
+]
+for (const [n, want] of mapCases) {
+  const got = c1of(n)
+  console.log(`  ${got === want ? '✓' : '✗'} 「${n.slice(0, 24)}」→ ${got || '(未匹配)'}` +
+    (got === want ? '' : `，期望 ${want || '(未匹配)'}`))
+}
+const q1st = matchQuotaItem('UPS电源(3KVA)', omQuotaItems as any)
+console.log(`  定额匹配「UPS电源(3KVA)」→ ${q1st ? q1st.row.name + '（' + q1st.how + '）' : '(未匹配)'}`)
+console.log('')
+
 // ── 断言：引擎必须与源表口径一致（改错参数/公式会在这里红）──
 const indMgmt = r1.indirect.find((l) => l.label === '企业管理费')
 const rateC1 = omRateItems.filter((r) => r.engine === 'c1')
@@ -182,6 +230,19 @@ const checks: Array<[string, boolean, string]> = [
   // —— 工资锚点分离 ——
   ['两法工资锚点已分离', Number(quotaVars.month_wage) === 11402.75 && Math.abs(params.dailyRate * 21.75 - 11436.916667) < 1e-3,
     `quota=${quotaVars.month_wage} c1=${(params.dailyRate * 21.75).toFixed(6)}`],
+  // —— 设备价格库取费映射（测算页「按管理处载入真实台账」）——
+  ['设备取费映射规则 = 138 条', omDeviceC1Maps.length === 138, String(omDeviceC1Maps.length)],
+  ['精确名规则：双电源进线屏 → 借UPS中值', c1of('双电源进线屏（GCS）') === '借UPS中值', c1of('双电源进线屏（GCS）')],
+  ['「UPS配电柜」归借UPS中值（不被 UPS 主机规则抢走）', c1of('UPS配电柜') === '借UPS中值', c1of('UPS配电柜')],
+  ['「精密空调隔离开关箱」不判为空调（排除词生效）', c1of('精密空调隔离开关箱（内装63A隔离开关一个，自动空气开关2个）') === '',
+    c1of('精密空调隔离开关箱（内装63A隔离开关一个，自动空气开关2个）')],
+  ['含温湿度控制器的 PLC 柜不判为环境监控设备', c1of('非冗余PLC控制柜（含柜内温湿度控制器、中间继电器、声光报警装置等）') === '',
+    c1of('非冗余PLC控制柜（含柜内温湿度控制器、中间继电器、声光报警装置等）')],
+  ['关键词规则命中工业交换机', c1of('工业交换机（不配光模块）') === '交换机', c1of('工业交换机（不配光模块）')],
+  ['定额精确匹配 UPS电源(3KVA)', !!q1st && q1st.how === 'exact', q1st ? q1st.how : '(未匹配)'],
+  ['定额未匹配返回 null', matchQuotaItem('绝不存在的设备名XYZ-123', omQuotaItems as any) === null, ''],
+  ['设备库定额法覆盖率 ≥ 6000 行', devQuotaHit >= 6000, String(devQuotaHit)],
+  ['设备库 C.1 法覆盖率 ≥ 1900 行', devC1Hit >= 1900, String(devC1Hit)],
 ]
 
 console.log('══ 断言 ══')

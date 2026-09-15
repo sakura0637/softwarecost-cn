@@ -6,7 +6,7 @@
 // 说明：全部数值均为「种子初值」，上线后可直接在【数据维护 → 运维参数】中增删改，
 //       种子仅在表为空（或版本号变更）时灌入，不会覆盖后台已改的数据。
 
-export const OM_SEED_VERSION = '2'
+export const OM_SEED_VERSION = '3'
 
 /** 人工综合成本基数：人天单价 = 月均工资 ÷ 月计薪天数 */
 export interface OmWageBase {
@@ -561,6 +561,172 @@ export const omStationTypes: OmStationType[] = [
   { code: "manage_only", name: "阀（闸）站（纯管理站）", unit: "个", qty: 14, time_factor: 1.0, sheet_name: "纯管理站", sort: 8 },
   { code: "isolated_point", name: "孤立监测点", unit: "套", qty: 99, time_factor: 1.0, sheet_name: "", sort: 9 },
   { code: "water_meter", name: "水量监管系统终端（室外部分）", unit: "套", qty: 0, time_factor: 1.0, sheet_name: "", sort: 10 },
+]
+
+/** 设备价格库 → 运维测算 的取费映射规则（设备自然属性 → C.1 取费类别）
+ *  为什么需要：设备价格库存的是「工程监控 / 实体环境 / 视频监视」这类自然属性，
+ *  而 C.1 工作量法要的是「UPS五级 / 借视频监控设备 / 交换机」这类**取费类别**，
+ *  后者由造价人员按专业判断给定（例：「双电源进线屏(GCS)」→「借UPS中值」），
+ *  实测二者自动映射率仅 0.2%，只能靠这张可维护的规则表建立对应关系。 */
+export interface OmDeviceC1Map {
+  /** name 设备名精确 / keyword 设备名关键词 / subcategory 子分类 / category 顶层分类 */
+  match_type: string
+  /** 匹配内容：name 为全等，其余为「包含」 */
+  match_value: string
+  /** 排除词（英文逗号分隔）：设备名含任一排除词则本条规则不适用
+   *  例「精密空调」遇「精密空调隔离开关箱 / 线缆 / 联动」须让位，否则误判 */
+  exclude_kw: string
+  /** → om_c1_benchmarks.category（C.1 取费类别） */
+  c1_category: string
+  /** → om_quota_items.name（定额条目名，可空；空则按设备名自动匹配定额库） */
+  quota_ref: string
+  /** 是否计取运维费 */
+  billable: boolean
+  /** 匹配优先级：数字小者优先（name=10 / keyword=50 / subcategory=80 / category=90） */
+  priority: number
+  seq: number
+  note: string
+}
+
+export const omDeviceC1Maps: OmDeviceC1Map[] = [
+  { match_type: 'name', match_value: '双电源进线屏（GCS）', exclude_kw: '', c1_category: '借UPS中值', quota_ref: '', billable: true, priority: 10, seq: 1, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '低压配电屏（GCS）', exclude_kw: '', c1_category: '借UPS中值', quota_ref: '', billable: true, priority: 10, seq: 2, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '照明配电箱', exclude_kw: '', c1_category: '借UPS中值', quota_ref: '', billable: true, priority: 10, seq: 3, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '插座配电箱', exclude_kw: '', c1_category: '借UPS中值', quota_ref: '', billable: true, priority: 10, seq: 4, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '空调配电箱', exclude_kw: '', c1_category: '借UPS中值', quota_ref: '', billable: true, priority: 10, seq: 5, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '市电配电柜', exclude_kw: '', c1_category: '借UPS中值', quota_ref: '', billable: true, priority: 10, seq: 6, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: 'UPS输入输出柜', exclude_kw: '', c1_category: '借UPS中值', quota_ref: '', billable: true, priority: 10, seq: 7, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '列头配电柜', exclude_kw: '', c1_category: '借UPS中值', quota_ref: '', billable: true, priority: 10, seq: 8, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '200kVA UPS主机（双机并联冗余）', exclude_kw: '', c1_category: 'UPS五级', quota_ref: '', billable: true, priority: 10, seq: 9, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '门禁发卡器', exclude_kw: '', c1_category: '门禁一体机', quota_ref: '', billable: true, priority: 10, seq: 10, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '水浸传感器', exclude_kw: '', c1_category: '环境监控设备', quota_ref: '', billable: true, priority: 10, seq: 11, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '温湿度传感器（包含压差、露点监测功能）', exclude_kw: '', c1_category: '环境监控设备', quota_ref: '', billable: true, priority: 10, seq: 12, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '漏水感应线', exclude_kw: '', c1_category: '环境监控设备', quota_ref: '', billable: true, priority: 10, seq: 13, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '双鉴探测器', exclude_kw: '', c1_category: '环境监控设备', quota_ref: '', billable: true, priority: 10, seq: 14, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '语音报警器', exclude_kw: '', c1_category: '环境监控设备', quota_ref: '', billable: true, priority: 10, seq: 15, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '机房专用空气呼吸器', exclude_kw: '', c1_category: '借气体灭火设备', quota_ref: '', billable: true, priority: 10, seq: 16, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '防雷接地', exclude_kw: '', c1_category: '参照环境监测设备', quota_ref: '', billable: true, priority: 10, seq: 17, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '室内网络摄像机', exclude_kw: '', c1_category: '视频监控设备', quota_ref: '', billable: true, priority: 10, seq: 18, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '高清摄像头', exclude_kw: '', c1_category: '视频监控设备', quota_ref: '', billable: true, priority: 10, seq: 19, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '投影机（1920×1080 /教育会议型）', exclude_kw: '', c1_category: '借视频监控设备', quota_ref: '', billable: true, priority: 10, seq: 20, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '计算机信号分配器', exclude_kw: '', c1_category: '借视频监控设备', quota_ref: '', billable: true, priority: 10, seq: 21, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '数字音频处理器', exclude_kw: '', c1_category: '借视频监控设备', quota_ref: '', billable: true, priority: 10, seq: 22, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '主扩音箱功放', exclude_kw: '', c1_category: '借视频监控设备', quota_ref: '', billable: true, priority: 10, seq: 23, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '数字发言主机', exclude_kw: '', c1_category: '借视频监控设备', quota_ref: '', billable: true, priority: 10, seq: 24, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '移动式主席单元', exclude_kw: '', c1_category: '借视频监控设备', quota_ref: '', billable: true, priority: 10, seq: 25, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '时序电源', exclude_kw: '', c1_category: '借视频监控设备', quota_ref: '', billable: true, priority: 10, seq: 26, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '16路继电器箱', exclude_kw: '', c1_category: '借视频监控设备', quota_ref: '', billable: true, priority: 10, seq: 27, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '视频会议一体化高清终端', exclude_kw: '', c1_category: '借视频监控设备', quota_ref: '', billable: true, priority: 10, seq: 28, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '视频会议高清摄像机', exclude_kw: '', c1_category: '视频监控设备', quota_ref: '', billable: true, priority: 10, seq: 29, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '混合矩阵', exclude_kw: '', c1_category: '借视频监控设备', quota_ref: '', billable: true, priority: 10, seq: 30, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '矩阵', exclude_kw: '', c1_category: '借视频监控设备', quota_ref: '', billable: true, priority: 10, seq: 31, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '视频会议摄像头', exclude_kw: '', c1_category: '视频监控设备', quota_ref: '', billable: true, priority: 10, seq: 32, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '显示及控制终端', exclude_kw: '', c1_category: 'PC服务器', quota_ref: '', billable: true, priority: 10, seq: 33, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '中控主机', exclude_kw: '', c1_category: 'PC服务器', quota_ref: '', billable: true, priority: 10, seq: 34, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '无线触摸屏', exclude_kw: '', c1_category: 'PC服务器', quota_ref: '', billable: true, priority: 10, seq: 35, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: 'MCU', exclude_kw: '', c1_category: 'PC服务器', quota_ref: '', billable: true, priority: 10, seq: 36, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '多媒体录播服务器', exclude_kw: '', c1_category: 'PC服务器', quota_ref: '', billable: true, priority: 10, seq: 37, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '视频会议主机', exclude_kw: '', c1_category: 'PC服务器', quota_ref: '', billable: true, priority: 10, seq: 38, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '机房监控主机', exclude_kw: '', c1_category: 'PC服务器', quota_ref: '', billable: true, priority: 10, seq: 39, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '监控工作站', exclude_kw: '', c1_category: 'PC服务器', quota_ref: '', billable: true, priority: 10, seq: 40, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: 'PC电脑', exclude_kw: '', c1_category: 'PC服务器', quota_ref: '', billable: true, priority: 10, seq: 41, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '操作电脑主机', exclude_kw: '', c1_category: 'PC服务器', quota_ref: '', billable: true, priority: 10, seq: 42, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '历史数据库服务器(总调中心)', exclude_kw: '', c1_category: 'PC服务器', quota_ref: '', billable: true, priority: 10, seq: 43, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '实时监控与通讯接口服务器(总调中心)', exclude_kw: '', c1_category: 'PC服务器', quota_ref: '', billable: true, priority: 10, seq: 44, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '时钟同步装置', exclude_kw: '', c1_category: '借PC服务器', quota_ref: '', billable: true, priority: 10, seq: 45, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '管理维护服务器', exclude_kw: '', c1_category: 'PC服务器', quota_ref: '', billable: true, priority: 10, seq: 46, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '工程师工作站', exclude_kw: '', c1_category: 'PC服务器', quota_ref: '', billable: true, priority: 10, seq: 47, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '操作员工作站', exclude_kw: '', c1_category: 'PC服务器', quota_ref: '', billable: true, priority: 10, seq: 48, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '培训工作站', exclude_kw: '', c1_category: 'PC服务器', quota_ref: '', billable: true, priority: 10, seq: 49, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: 'oncall工作站', exclude_kw: '', c1_category: 'PC服务器', quota_ref: '', billable: true, priority: 10, seq: 50, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: 'DNS服务器', exclude_kw: '', c1_category: 'PC服务器', quota_ref: '', billable: true, priority: 10, seq: 51, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '网络硬盘录像机', exclude_kw: '', c1_category: '低端存储设备', quota_ref: '', billable: true, priority: 10, seq: 52, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '硬盘录像机（含软件）', exclude_kw: '', c1_category: '低端存储设备', quota_ref: '', billable: true, priority: 10, seq: 53, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '无线路由器', exclude_kw: '', c1_category: '无线接入设备', quota_ref: '', billable: true, priority: 10, seq: 54, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '48口交换机', exclude_kw: '', c1_category: '交换机', quota_ref: '', billable: true, priority: 10, seq: 55, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '交换机48 千兆电口，4 千兆光口', exclude_kw: '', c1_category: '交换机', quota_ref: '', billable: true, priority: 10, seq: 56, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '交换机48 千兆电口，4 万兆光口', exclude_kw: '', c1_category: '交换机', quota_ref: '', billable: true, priority: 10, seq: 57, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '交换机', exclude_kw: '', c1_category: '交换机', quota_ref: '', billable: true, priority: 10, seq: 58, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '核心路由器', exclude_kw: '', c1_category: '同区域站专网核心路由器', quota_ref: '', billable: true, priority: 10, seq: 59, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '核心交换机', exclude_kw: '', c1_category: '交换机', quota_ref: '', billable: true, priority: 10, seq: 60, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '接入交换机', exclude_kw: '', c1_category: '交换机', quota_ref: '', billable: true, priority: 10, seq: 61, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '网管系统', exclude_kw: '', c1_category: '借中间件', quota_ref: '', billable: true, priority: 10, seq: 62, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: 'GSM模块', exclude_kw: '', c1_category: '借无线接入设备', quota_ref: '', billable: true, priority: 10, seq: 63, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '防火墙', exclude_kw: '', c1_category: '防火墙', quota_ref: '', billable: true, priority: 10, seq: 64, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '安全审计系统', exclude_kw: '', c1_category: '借入侵检测', quota_ref: '', billable: true, priority: 10, seq: 65, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: 'IDS', exclude_kw: '', c1_category: '入侵检测', quota_ref: '', billable: true, priority: 10, seq: 66, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '网闸', exclude_kw: '', c1_category: '借防火墙', quota_ref: '', billable: true, priority: 10, seq: 67, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '上网行为管理系统', exclude_kw: '', c1_category: '借防火墙', quota_ref: '', billable: true, priority: 10, seq: 68, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '监控终端', exclude_kw: '', c1_category: 'PC服务器', quota_ref: '', billable: true, priority: 10, seq: 69, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '数据库软件', exclude_kw: '', c1_category: '数据库', quota_ref: '', billable: true, priority: 10, seq: 70, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '数据通信管理软件', exclude_kw: '', c1_category: '中间件', quota_ref: '', billable: true, priority: 10, seq: 71, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: 'UPS监控系统（包含蓄电池环境温度监测）', exclude_kw: '', c1_category: '借中间件', quota_ref: '', billable: true, priority: 10, seq: 72, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '监控平台软件', exclude_kw: '', c1_category: '中间件', quota_ref: '', billable: true, priority: 10, seq: 73, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '数据接口软件（包含供配电监测、UPS监测、温湿度监测等系统数据接口软件）', exclude_kw: '', c1_category: '中间件', quota_ref: '', billable: true, priority: 10, seq: 74, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '环境监控系统软件', exclude_kw: '', c1_category: '中间件', quota_ref: '', billable: true, priority: 10, seq: 75, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: 'WEB监控系统', exclude_kw: '', c1_category: '中间件', quota_ref: '', billable: true, priority: 10, seq: 76, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '门禁系统(含门磁、控制器、卡及软件)', exclude_kw: '', c1_category: '门禁一体机', quota_ref: '', billable: true, priority: 10, seq: 77, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '视频监视软件', exclude_kw: '', c1_category: '中间件', quota_ref: '', billable: true, priority: 10, seq: 78, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '控制软件', exclude_kw: '', c1_category: '中间件', quota_ref: '', billable: true, priority: 10, seq: 79, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '业务管理平台', exclude_kw: '', c1_category: '中间件', quota_ref: '', billable: true, priority: 10, seq: 80, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '双门门禁系统含门磁、控制器、卡及软件', exclude_kw: '', c1_category: '门禁一体机', quota_ref: '', billable: true, priority: 10, seq: 81, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '历史数据库服务器', exclude_kw: '', c1_category: 'PC服务器', quota_ref: '', billable: true, priority: 10, seq: 82, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '实时监控与通讯接口服务器', exclude_kw: '', c1_category: 'PC服务器', quota_ref: '', billable: true, priority: 10, seq: 83, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '工作站', exclude_kw: '', c1_category: 'PC服务器', quota_ref: '', billable: true, priority: 10, seq: 84, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '小型机房专用空调', exclude_kw: '', c1_category: '精密空调', quota_ref: '', billable: true, priority: 10, seq: 85, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'name', match_value: '服务器', exclude_kw: '', c1_category: 'PC服务器', quota_ref: '', billable: true, priority: 10, seq: 86, note: '源表《C1取费对照表》同名设备口径' },
+  { match_type: 'keyword', match_value: '核心交换机', exclude_kw: '', c1_category: '交换机', quota_ref: '', billable: true, priority: 50, seq: 87, note: 'C.1 交换机' },
+  { match_type: 'keyword', match_value: '接入交换机', exclude_kw: '', c1_category: '交换机', quota_ref: '', billable: true, priority: 50, seq: 88, note: 'C.1 交换机' },
+  { match_type: 'keyword', match_value: '工业交换机', exclude_kw: '', c1_category: '交换机', quota_ref: '', billable: true, priority: 50, seq: 89, note: 'C.1 交换机' },
+  { match_type: 'keyword', match_value: '交换机', exclude_kw: '', c1_category: '交换机', quota_ref: '', billable: true, priority: 50, seq: 90, note: 'C.1 交换机' },
+  { match_type: 'keyword', match_value: '路由器', exclude_kw: '', c1_category: '路由器', quota_ref: '', billable: true, priority: 50, seq: 91, note: 'C.1 路由器' },
+  { match_type: 'keyword', match_value: '防火墙', exclude_kw: '', c1_category: '防火墙', quota_ref: '', billable: true, priority: 50, seq: 92, note: 'C.1 防火墙' },
+  { match_type: 'keyword', match_value: '入侵检测', exclude_kw: '', c1_category: '入侵检测', quota_ref: '', billable: true, priority: 50, seq: 93, note: 'C.1 入侵检测' },
+  { match_type: 'keyword', match_value: '磁盘阵列', exclude_kw: '', c1_category: '磁盘阵列', quota_ref: '', billable: true, priority: 50, seq: 94, note: 'C.1 磁盘阵列' },
+  { match_type: 'keyword', match_value: '存储阵列', exclude_kw: '', c1_category: '磁盘阵列', quota_ref: '', billable: true, priority: 50, seq: 95, note: 'C.1 磁盘阵列' },
+  { match_type: 'keyword', match_value: '存储扩展柜', exclude_kw: '', c1_category: '低端存储设备', quota_ref: '', billable: true, priority: 50, seq: 96, note: 'C.1 低端存储设备' },
+  { match_type: 'keyword', match_value: '操作系统', exclude_kw: '', c1_category: '操作系统', quota_ref: '', billable: true, priority: 50, seq: 97, note: 'C.1 操作系统' },
+  { match_type: 'keyword', match_value: '数据库管理系统', exclude_kw: '建设,编制', c1_category: '数据库', quota_ref: '', billable: true, priority: 50, seq: 98, note: 'C.1 数据库' },
+  { match_type: 'keyword', match_value: '中间件', exclude_kw: '', c1_category: '中间件', quota_ref: '', billable: true, priority: 50, seq: 99, note: 'C.1 中间件' },
+  { match_type: 'keyword', match_value: '流媒体服务器', exclude_kw: '软件,机架,机柜', c1_category: 'PC服务器', quota_ref: '', billable: true, priority: 50, seq: 100, note: 'C.1 PC服务器' },
+  { match_type: 'keyword', match_value: '视频及数据管理服务器', exclude_kw: '软件,机架,机柜', c1_category: 'PC服务器', quota_ref: '', billable: true, priority: 50, seq: 101, note: 'C.1 PC服务器' },
+  { match_type: 'keyword', match_value: '数据管理服务器', exclude_kw: '软件,机架,机柜', c1_category: 'PC服务器', quota_ref: '', billable: true, priority: 50, seq: 102, note: 'C.1 PC服务器' },
+  { match_type: 'keyword', match_value: '数据库服务器', exclude_kw: '软件,机架,机柜', c1_category: 'PC服务器', quota_ref: '', billable: true, priority: 50, seq: 103, note: 'C.1 PC服务器' },
+  { match_type: 'keyword', match_value: '硬盘录像机', exclude_kw: '', c1_category: '借视频监控设备', quota_ref: '', billable: true, priority: 50, seq: 104, note: '示例口径' },
+  { match_type: 'keyword', match_value: '录像机', exclude_kw: '', c1_category: '借视频监控设备', quota_ref: '', billable: true, priority: 50, seq: 105, note: '示例口径' },
+  { match_type: 'keyword', match_value: '摄像机', exclude_kw: '无画面', c1_category: '借视频监控设备', quota_ref: '', billable: true, priority: 50, seq: 106, note: '示例口径' },
+  { match_type: 'keyword', match_value: '摄像头', exclude_kw: '', c1_category: '借视频监控设备', quota_ref: '', billable: true, priority: 50, seq: 107, note: '示例口径' },
+  { match_type: 'keyword', match_value: '球机', exclude_kw: '安装架', c1_category: '借视频监控设备', quota_ref: '', billable: true, priority: 50, seq: 108, note: '示例口径' },
+  { match_type: 'keyword', match_value: '枪机', exclude_kw: '', c1_category: '借视频监控设备', quota_ref: '', billable: true, priority: 50, seq: 109, note: '示例口径' },
+  { match_type: 'keyword', match_value: '投影机', exclude_kw: '支架', c1_category: '借视频监控设备', quota_ref: '', billable: true, priority: 50, seq: 110, note: '示例口径' },
+  { match_type: 'keyword', match_value: '音箱', exclude_kw: '', c1_category: '借视频监控设备', quota_ref: '', billable: true, priority: 50, seq: 111, note: '示例口径' },
+  { match_type: 'keyword', match_value: '功放', exclude_kw: '', c1_category: '借视频监控设备', quota_ref: '', billable: true, priority: 50, seq: 112, note: '示例口径' },
+  { match_type: 'keyword', match_value: '音频处理器', exclude_kw: '', c1_category: '借视频监控设备', quota_ref: '', billable: true, priority: 50, seq: 113, note: '示例口径' },
+  { match_type: 'keyword', match_value: '发言主机', exclude_kw: '', c1_category: '借视频监控设备', quota_ref: '', billable: true, priority: 50, seq: 114, note: '示例口径' },
+  { match_type: 'keyword', match_value: '烟感探测器', exclude_kw: '', c1_category: '探测器', quota_ref: '', billable: true, priority: 50, seq: 115, note: 'C.1 探测器' },
+  { match_type: 'keyword', match_value: '感烟探测器', exclude_kw: '', c1_category: '探测器', quota_ref: '', billable: true, priority: 50, seq: 116, note: 'C.1 探测器' },
+  { match_type: 'keyword', match_value: '感温探测器', exclude_kw: '', c1_category: '探测器', quota_ref: '', billable: true, priority: 50, seq: 117, note: 'C.1 探测器' },
+  { match_type: 'keyword', match_value: '双鉴探测器', exclude_kw: '', c1_category: '探测器', quota_ref: '', billable: true, priority: 50, seq: 118, note: 'C.1 探测器' },
+  { match_type: 'keyword', match_value: '探测器', exclude_kw: '底座', c1_category: '探测器', quota_ref: '', billable: true, priority: 50, seq: 119, note: 'C.1 探测器' },
+  { match_type: 'keyword', match_value: '水浸传感器', exclude_kw: '', c1_category: '环境监控设备', quota_ref: '', billable: true, priority: 50, seq: 120, note: 'C.1 环境监控设备' },
+  { match_type: 'keyword', match_value: '温湿度传感器', exclude_kw: '', c1_category: '环境监控设备', quota_ref: '', billable: true, priority: 50, seq: 121, note: 'C.1 环境监控设备' },
+  { match_type: 'keyword', match_value: '漏水', exclude_kw: '', c1_category: '环境监控设备', quota_ref: '', billable: true, priority: 50, seq: 122, note: 'C.1 环境监控设备' },
+  { match_type: 'keyword', match_value: '气体灭火', exclude_kw: '', c1_category: '借气体灭火设备', quota_ref: '', billable: true, priority: 50, seq: 123, note: '示例口径' },
+  { match_type: 'keyword', match_value: '空气呼吸器', exclude_kw: '', c1_category: '借气体灭火设备', quota_ref: '', billable: true, priority: 50, seq: 124, note: '示例口径' },
+  { match_type: 'keyword', match_value: '灭火钢瓶', exclude_kw: '', c1_category: '借气体灭火设备', quota_ref: '', billable: true, priority: 50, seq: 125, note: '示例口径' },
+  { match_type: 'keyword', match_value: '不间断电源', exclude_kw: '', c1_category: 'UPS五级', quota_ref: '', billable: true, priority: 50, seq: 126, note: 'UPS 主机' },
+  { match_type: 'keyword', match_value: 'UPS电源', exclude_kw: '配电,电缆,插座', c1_category: 'UPS五级', quota_ref: '', billable: true, priority: 50, seq: 127, note: 'UPS 主机' },
+  { match_type: 'keyword', match_value: 'UPS主机', exclude_kw: '配电,电缆,插座', c1_category: 'UPS五级', quota_ref: '', billable: true, priority: 50, seq: 128, note: 'UPS 主机' },
+  { match_type: 'keyword', match_value: '配电柜', exclude_kw: '支架,柜体', c1_category: '借UPS中值', quota_ref: '', billable: true, priority: 50, seq: 129, note: '示例口径：配电柜借 UPS 中值' },
+  { match_type: 'keyword', match_value: '配电屏', exclude_kw: '柜体,支架', c1_category: '借UPS中值', quota_ref: '', billable: true, priority: 50, seq: 130, note: '示例口径' },
+  { match_type: 'keyword', match_value: '配电箱', exclude_kw: '附件', c1_category: '借UPS中值', quota_ref: '', billable: true, priority: 50, seq: 131, note: '示例口径' },
+  { match_type: 'keyword', match_value: '列头柜', exclude_kw: '', c1_category: '借UPS中值', quota_ref: '', billable: true, priority: 50, seq: 132, note: '示例口径' },
+  { match_type: 'keyword', match_value: '精密空调', exclude_kw: '隔离开关箱,线缆,联动,给排水,管路,配电,施工', c1_category: '精密空调', quota_ref: '', billable: true, priority: 50, seq: 133, note: 'C.1 精密空调' },
+  { match_type: 'keyword', match_value: '专用空调', exclude_kw: '线缆,管路,配电,施工', c1_category: '精密空调', quota_ref: '', billable: true, priority: 50, seq: 134, note: 'C.1 精密空调' },
+  { match_type: 'keyword', match_value: '空调', exclude_kw: '隔离开关箱,管路,线缆,接地,配电,箱,柜,联动,给排水,施工', c1_category: '精密空调（最低值）', quota_ref: '', billable: true, priority: 50, seq: 135, note: '普通空调取精密空调最低值' },
+  { match_type: 'keyword', match_value: '门禁系统', exclude_kw: '集成', c1_category: '门禁一体机', quota_ref: '', billable: true, priority: 50, seq: 136, note: 'C.1 门禁一体机' },
+  { match_type: 'keyword', match_value: '门禁', exclude_kw: '防火门,集成', c1_category: '门禁一体机', quota_ref: '', billable: true, priority: 50, seq: 137, note: 'C.1 门禁一体机' },
+  { match_type: 'keyword', match_value: 'LCU机柜', exclude_kw: '', c1_category: '小型机', quota_ref: '', billable: true, priority: 50, seq: 138, note: '示例口径：普通阀闸站 LCU 机柜借小型机' },
 ]
 
 /** 示例设备清单（源表《C1取费对照表（三张新表）》全量，用于页面一键载入验证引擎） */

@@ -11,7 +11,7 @@ import { estimationBenchmarks, provincialPricing, standardRealParams } from '../
 import { cityRates, estimationParameters } from '../seed/parameterData'
 import {
   OM_SEED_VERSION, omWageBases, omFactors, omRateItems,
-  omC1Benchmarks, omQuotaItems, omStationTypes,
+  omC1Benchmarks, omQuotaItems, omStationTypes, omDeviceC1Maps,
 } from '../seed/omData'
 // RBAC 权限目录：外置配置，新增模块/按钮只需改此文件，db.ts 自动注册
 import { PERMISSION_MODULES, ACTION_NAMES, DEFAULT_ROLES, USER_PERMISSION_PATTERNS, matchesPermissionPattern } from '../config/permissions'
@@ -577,6 +577,30 @@ CREATE TABLE IF NOT EXISTS om_station_types (
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- ── 设备价格库 → 运维测算 取费映射（2026-09-15）──────────────────────
+-- 为什么要这张表：设备价格库存的是设备**自然属性**（工程监控 / 实体环境 / 视频监视…），
+-- 而 C.1 工作量法要的是**取费类别**（UPS五级 / 借视频监控设备 / 交换机…）——
+-- 后者是造价人员按专业判断给定的（例：「双电源进线屏(GCS)」→「借UPS中值」），
+-- 实测二者自动映射率仅 0.2%，无法从设备名推出，只能用可维护的规则表建立对应。
+-- 一条规则可同时给出两法的取费口径：c1_category（C.1）与 quota_ref（定额条目名）。
+CREATE TABLE IF NOT EXISTS om_device_c1_map (
+  id          SERIAL PRIMARY KEY,
+  match_type  VARCHAR(16) NOT NULL DEFAULT 'keyword', -- name 设备名精确 / keyword 设备名关键词 / subcategory 子分类 / category 顶层分类
+  match_value VARCHAR(255) NOT NULL,                  -- 匹配内容（name 为全等；其余为「包含」）
+  exclude_kw  TEXT,                                   -- 排除词（英文逗号分隔）：设备名含任一排除词则本条规则不适用
+                                                      -- 例：「精密空调」遇「精密空调隔离开关箱/线缆/联动」须让位，否则误判
+  c1_category VARCHAR(255),                           -- → om_c1_benchmarks.category；空且不计费则为占位
+  quota_ref   VARCHAR(255),                           -- → om_quota_items.name（可空，空则按设备名自动匹配定额库）
+  billable    BOOLEAN NOT NULL DEFAULT true,          -- 是否计取运维费（线缆 / 立杆 / 装饰材料等为 false）
+  priority    INTEGER NOT NULL DEFAULT 100,           -- 匹配优先级：数字小者优先（name=10 keyword=50 subcategory=80 category=90）
+  seq         INTEGER NOT NULL DEFAULT 0,
+  is_active   BOOLEAN NOT NULL DEFAULT true,
+  note        TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_omdcm_type ON om_device_c1_map(match_type, priority);
+
 -- 测算项目与明细（引擎计算结果的落地快照；明细行保存「引用 + 现值」，
 -- 便于参数调整后重算，也便于留痕对比）
 CREATE TABLE IF NOT EXISTS om_projects (
@@ -842,7 +866,14 @@ CREATE TABLE IF NOT EXISTS kv (
           [s.code, s.name, s.unit, s.qty, s.time_factor, s.sheet_name, s.sort]
         )
       }
-      console.log(`[seed] 运维测算参数库已灌：工资基数${omWageBases.length} 因子${omFactors.length} 费率${omRateItems.length} C1基准${omC1Benchmarks.length} 定额${omQuotaItems.length} 站点${omStationTypes.length}`)
+      for (const m of omDeviceC1Maps) {
+        await pool.query(
+          `INSERT INTO om_device_c1_map (match_type, match_value, exclude_kw, c1_category, quota_ref, billable, priority, seq, note)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+          [m.match_type, m.match_value, m.exclude_kw, m.c1_category, m.quota_ref, m.billable, m.priority, m.seq, m.note]
+        )
+      }
+      console.log(`[seed] 运维测算参数库已灌：工资基数${omWageBases.length} 因子${omFactors.length} 费率${omRateItems.length} C1基准${omC1Benchmarks.length} 定额${omQuotaItems.length} 站点${omStationTypes.length} 设备取费映射${omDeviceC1Maps.length}`)
     } else if (omSeeded !== OM_SEED_VERSION) {
       // 参数表已有数据但种子版本落后（老库升级）→ 做一次增量修复：
       // 只改「按源表口径确实错了」的字段，quota / rate / value 等被后台改过的数值一律不动。
@@ -900,6 +931,8 @@ CREATE TABLE IF NOT EXISTS kv (
  *      措施项目费(D33/D34) 与 A 法备品备件(F19 无公式) 关掉，默认不参与计算。
  *   5. om_wage_base 补 usage —— 两法工资锚点不同（C.1 法 11436.9167 / 定额法 136833÷12=11402.75），
  *      分开标注后引擎各取所需，也便于在后台对比。
+ *   6. 新增 om_device_c1_map（设备价格库 → 运维取费映射）并补插种子规则 ——
+ *      让运维测算能直接吃「设备价格库」的真实设备。已有规则不更新，只补缺失条目。
  */
 async function repairOmSeed(): Promise<void> {
   let nQuota = 0
@@ -948,7 +981,22 @@ async function repairOmSeed(): Promise<void> {
     nWage += r.rowCount || 0
   }
 
-  console.log(`[repair] 运维参数库已修订：定额类别/公式 ${nQuota} 条、费率 ${nRate} 条（新增 ${nRateIns} 条）、工资基数 ${nWage} 条`)
+  // 设备取费映射规则：只补插「种子里有、库里没有」的，
+  // 已有规则一律不更新 —— 管理员在后台调过的类别 / 排除词必须原样保住。
+  let nMapIns = 0
+  const existMaps = await pool.query('SELECT match_type, match_value FROM om_device_c1_map')
+  const existKeys = new Set(existMaps.rows.map((x: any) => `${x.match_type}|${x.match_value}`))
+  for (const m of omDeviceC1Maps) {
+    if (existKeys.has(`${m.match_type}|${m.match_value}`)) continue
+    await pool.query(
+      `INSERT INTO om_device_c1_map (match_type, match_value, exclude_kw, c1_category, quota_ref, billable, priority, seq, note)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [m.match_type, m.match_value, m.exclude_kw, m.c1_category, m.quota_ref, m.billable, m.priority, m.seq, m.note]
+    )
+    nMapIns++
+  }
+
+  console.log(`[repair] 运维参数库已修订：定额类别/公式 ${nQuota} 条、费率 ${nRate} 条（新增 ${nRateIns} 条）、工资基数 ${nWage} 条、设备取费映射新增 ${nMapIns} 条`)
 }
 
 export default db
