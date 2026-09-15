@@ -11,6 +11,8 @@ export interface ColumnMeta {
   uiType: 'text' | 'number' | 'boolean' | 'date' | 'json'
   nullable: boolean
   readonly: boolean
+  /** 列表不展示（编辑弹窗仍可维护）：公式这类对人不友好但需保留的字段 */
+  hidden: boolean
   isPk: boolean
   pkAuto: boolean
   isFk: boolean
@@ -48,6 +50,7 @@ export async function getColumns(key: string): Promise<ColumnMeta[]> {
     .all(key)
   const jsonSet = new Set(conf.json || [])
   const roSet = new Set(conf.readonly || [])
+  const hidSet = new Set(conf.hidden || [])
   const fkMap = conf.fk || {}
   return rows.map((r: any) => {
     const name: string = r.column_name
@@ -59,6 +62,7 @@ export async function getColumns(key: string): Promise<ColumnMeta[]> {
       uiType: jsonSet.has(name) ? 'json' : pgTypeToUi(r.data_type),
       nullable: r.is_nullable === 'YES',
       readonly: roSet.has(name) || (name === pk && !!conf.pkAuto),
+      hidden: hidSet.has(name),
       isPk: name === pk,
       pkAuto: name === pk && !!conf.pkAuto,
       isFk,

@@ -549,6 +549,7 @@ CREATE TABLE IF NOT EXISTS om_quota_items (
   kind         VARCHAR(16) NOT NULL DEFAULT '硬件',     -- 硬件 / 软件（决定取费调整系数）
   point_based  BOOLEAN NOT NULL DEFAULT false,         -- 按「点位数」计价（软件类定额：PLC应用系统 / UNITY PRO）
   formula      TEXT,                                   -- 推导式（后台可编辑，运行期现算；为空则用 quota 定值）
+  formula_text TEXT,                                   -- 推导式的中文说明（给人看的，不参与计算）
   formula_raw  TEXT,                                   -- 源表原公式（只读，仅追溯用，不参与计算）
   source       TEXT,
   note         TEXT,
@@ -561,6 +562,7 @@ CREATE INDEX IF NOT EXISTS idx_omq_name ON om_quota_items(name);
 -- 老库补列（幂等；新库已在 CREATE TABLE 里带上）。缺了它 repairOmSeed() 会 UPDATE 不存在的列 → 全站 500。
 ALTER TABLE om_quota_items ADD COLUMN IF NOT EXISTS point_based BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE om_quota_items ADD COLUMN IF NOT EXISTS formula TEXT;
+ALTER TABLE om_quota_items ADD COLUMN IF NOT EXISTS formula_text TEXT;
 ALTER TABLE om_quota_items ADD COLUMN IF NOT EXISTS formula_raw TEXT;
 
 CREATE TABLE IF NOT EXISTS om_station_types (
@@ -854,9 +856,9 @@ CREATE TABLE IF NOT EXISTS kv (
       }
       for (const q of omQuotaItems) {
         await pool.query(
-          `INSERT INTO om_quota_items (name, unit, quota, kind, point_based, formula, formula_raw, source, note, seq)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-          [q.name, q.unit, q.quota, q.kind, q.point_based, q.formula, q.formula_raw, q.source, q.note, q.seq]
+          `INSERT INTO om_quota_items (name, unit, quota, kind, point_based, formula, formula_text, formula_raw, source, note, seq)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+          [q.name, q.unit, q.quota, q.kind, q.point_based, q.formula, q.formula_text, q.formula_raw, q.source, q.note, q.seq]
         )
       }
       for (const s of omStationTypes) {
@@ -943,11 +945,14 @@ async function repairOmSeed(): Promise<void> {
   for (const q of omQuotaItems) {
     const r = await pool.query(
       `UPDATE om_quota_items
-          SET kind = $1, point_based = $2, formula = $3, formula_raw = $4, updated_at = now()
-        WHERE name = $5
+          SET kind = $1, point_based = $2, formula = $3, formula_raw = $4,
+              formula_text = CASE WHEN formula_text IS NULL OR formula_text = '' THEN $5 ELSE formula_text END,
+              updated_at = now()
+        WHERE name = $6
           AND (kind IS DISTINCT FROM $1 OR point_based IS DISTINCT FROM $2
-               OR formula IS DISTINCT FROM $3 OR formula_raw IS DISTINCT FROM $4)`,
-      [q.kind, q.point_based, q.formula, q.formula_raw, q.name]
+               OR formula IS DISTINCT FROM $3 OR formula_raw IS DISTINCT FROM $4
+               OR formula_text IS NULL OR formula_text = '')`,
+      [q.kind, q.point_based, q.formula, q.formula_raw, q.formula_text, q.name]
     )
     nQuota += r.rowCount || 0
   }

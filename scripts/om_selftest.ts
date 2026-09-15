@@ -1,6 +1,8 @@
 // 离线验证：用种子参数 + 示例清单跑一遍双引擎，与源表口径对数
 import { calcOm, quotaValueOf, type OmParams, type OmItemInput } from '../server/utils/omCalculator'
-import { matchDevice, matchC1Rule, matchQuotaItem, buildQuotaIndex } from '../server/utils/omDeviceMatcher'
+import { matchDevice, matchC1Rule, matchQuotaItem, buildQuotaIndex,
+  buildSiteTree, parseSiteSelection, buildSiteWhere, countSelectedRows,
+} from '../server/utils/omDeviceMatcher'
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import {
@@ -111,7 +113,7 @@ console.log('  备品备件     =', (r2.spare?.amount || 0).toFixed(2), '基数=
 console.log('  暂列金       =', r2.extraTotal.toFixed(2), r2.extra.length ? '' : '（未启用）')
 console.log('  合计         =', (r2.total / 10000).toFixed(2), '万元')
 console.log('  未匹配行数   =', r2.items.filter((x) => !x.resolved).length)
-const q1 = r2.items.find((x) => x.name.includes('UPS电源(3KVA)'))
+const q1 = r2.items.find((x) => x.name.includes('UPS'))
 console.log('  抽查 UPS(3KVA)：定额=' + q1?.usedQuota + ' 系数=' + q1?.kindCoef + ' 金额=' + q1?.amount?.toFixed(2))
 const unmatched = r2.items.filter((x) => !x.resolved).map((x) => x.name)
 console.log('  未匹配样例:', unmatched.slice(0, 12))
@@ -176,6 +178,45 @@ for (const [n, want] of mapCases) {
 }
 const q1st = matchQuotaItem('UPS电源(3KVA)', omQuotaItems as any)
 console.log(`  定额匹配「UPS电源(3KVA)」→ ${q1st ? q1st.row.name + '（' + q1st.how + '）' : '(未匹配)'}`)
+console.log('')
+
+// ── 站点筛选（管理处 → 子站 两级多选；测算页「选择站点」弹窗的数据基础）──
+// 设备库种子里没有 is_summary 字段，它由 deviceSeed.ts 按子站名判定：
+// 子站名为「全站设备汇总」且管理处不是总调中心 → 是重复的汇总行，必须排除。
+// 总调中心没有真实子站，它的「全站设备汇总」就是本站明细，必须保留。
+const treeRows = devRows.map((r: any) => ({
+  station: r.station,
+  subsite: r.subsite,
+  is_summary: r.subsite === '全站设备汇总' && r.station !== '总调中心',
+}))
+const siteTree = buildSiteTree(treeRows)
+const allRows = siteTree.reduce((a, n) => a + n.count, 0)
+const sjz = siteTree.find((n) => n.station === '石家庄')
+const zdzx = siteTree.find((n) => n.station === '总调中心')
+
+console.log('══ 站点筛选 ══')
+console.log(`  管理处 ${siteTree.length} 个 · 子站 ${siteTree.reduce((a, n) => a + n.subsites.length, 0)} 个 · 设备 ${allRows} 行`)
+console.log(`  石家庄 ${sjz?.count} 行 / ${sjz?.subsites.length} 个子站；总调中心 ${zdzx?.count} 行（其汇总站=本站明细，保留）`)
+
+const sel = parseSiteSelection('石家庄::正定管理站,邢台::*')
+console.log(`  解析「石家庄::正定管理站,邢台::*」→ ${sel.map((s) => `${s.station}/${s.subsite}`).join(' + ')}` +
+  ` = ${countSelectedRows(sel, siteTree)} 行`)
+const selWhere = buildSiteWhere(sel)
+console.log(`  WHERE ${selWhere.sql}  params=${JSON.stringify(selWhere.params)}`)
+console.log(`  空选择（全选）→ ${countSelectedRows([], siteTree)} 行；非法转义不崩：` +
+  `${JSON.stringify(parseSiteSelection('%E4%B8%8D%E5%90%88%E6%B3%95%'))}`)
+console.log('')
+
+// ── 定额公式的中文说明（数据维护页「计算说明」列）──
+const ftext = omQuotaItems.map((q) => q.formula_text || '')
+const ftextUniq = [...new Set(ftext)]
+const hasLatin = ftext.filter((t) => /[a-z_]{3,}/.test(t))
+console.log('══ 定额公式中文说明 ══')
+console.log(`  ${omQuotaItems.length} 条全部有说明：${ftext.every(Boolean)}；不同说明 ${ftextUniq.length} 种`)
+console.log(`  含英文变量名（天书）的说明：${hasLatin.length} 条`)
+console.log(`  示例：${omQuotaItems.find((q) => q.name === '站控应用系统')?.formula_text}`)
+console.log(`        ${omQuotaItems.find((q) => q.name === 'UPS电源(3KVA)')?.formula_text}`)
+console.log(`        固定值条目：${omQuotaItems.find((q) => !q.formula)?.formula_text}`)
 console.log('')
 
 // ── 断言：引擎必须与源表口径一致（改错参数/公式会在这里红）──
@@ -243,6 +284,29 @@ const checks: Array<[string, boolean, string]> = [
   ['定额未匹配返回 null', matchQuotaItem('绝不存在的设备名XYZ-123', omQuotaItems as any) === null, ''],
   ['设备库定额法覆盖率 ≥ 6000 行', devQuotaHit >= 6000, String(devQuotaHit)],
   ['设备库 C.1 法覆盖率 ≥ 1900 行', devC1Hit >= 1900, String(devC1Hit)],
+  // —— 站点筛选（测算页「选择站点」弹窗的数据基础）——
+  ['站点树已排除各管理处的「全站设备汇总」（总调中心除外）',
+    siteTree.every((n) => n.subsites.every((s) => s.name !== '全站设备汇总' || n.station === '总调中心')),
+    siteTree.flatMap((n) => n.subsites.filter((s) => s.name === '全站设备汇总').map((s) => n.station + '/' + s.name)).join(',')],
+  ['总调中心的汇总站保留（它没有真实子站）', !!zdzx && zdzx.count > 0, String(zdzx?.count)],
+  ['站点行数合计 = 8452（剔重后）', allRows === 8452, String(allRows)],
+  ['石家庄 = 1535 行 / 32 个子站', sjz?.count === 1535 && sjz?.subsites.length === 32,
+    `${sjz?.count} 行 / ${sjz?.subsites.length} 个子站`],
+  ['选择解析：精确子站 + 管理处通配',
+    sel.length === 2 && sel[0].subsite === '正定管理站' && sel[1].subsite === '*', JSON.stringify(sel)],
+  ['「邢台::*」按整处行数计',
+    countSelectedRows(sel, siteTree) ===
+      (sjz?.subsites.find((s) => s.name === '正定管理站')?.count || 0) + (siteTree.find((n) => n.station === '邢台')?.count || 0),
+    String(countSelectedRows(sel, siteTree))],
+  ['空选择 = 全选全部站点', countSelectedRows([], siteTree) === allRows, String(countSelectedRows([], siteTree))],
+  ['站点 WHERE 生成占位符与参数', selWhere.params.length === 3 && selWhere.sql.includes('OR'), selWhere.sql],
+  // —— 定额公式的中文说明（数据维护页「计算说明」列，杜绝英文天书）——
+  ['349 条定额全部有中文说明', ftext.every(Boolean), String(ftext.filter(Boolean).length)],
+  ['中文说明里不含英文变量名', hasLatin.length === 0, hasLatin.slice(0, 2).join(' / ')],
+  ['固定值条目的说明统一', omQuotaItems.filter((q) => !q.formula).every((q) => q.formula_text === '固定值，不随后台参数联动'),
+    String(omQuotaItems.filter((q) => !q.formula).length)],
+  ['「÷ 12个月」年额折月说明 ≥ 35 种', ftextUniq.filter((t) => t.includes('÷ 12个月')).length >= 35,
+    String(ftextUniq.filter((t) => t.includes('÷ 12个月')).length)],
 ]
 
 console.log('══ 断言 ══')

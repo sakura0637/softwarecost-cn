@@ -134,6 +134,8 @@ export const ROUTE_PERMISSION_RULES: Array<{ method: string; pattern: string; co
   { method: 'POST', pattern: '/api/projects/:id/calculate', code: 'projects:view', note: '只读计算' },
   // —— 运维测算：计算/取参数/取示例清单都是只读，不产生数据
   { method: 'POST', pattern: '/api/om/calculate', code: 'om:view', note: '只读计算' },
+  // 站点选择是一组集合（最多 169 个子站），用请求体传参 → POST；但语义仍是只读取数
+  { method: 'POST', pattern: '/api/om/devices', code: 'om:view', note: '只读取数（站点集合用 POST 传参）' },
 ]
 
 /** HTTP 方法 → 动作 的默认映射（模块前缀匹配后套用） */

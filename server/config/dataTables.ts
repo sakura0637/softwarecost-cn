@@ -13,6 +13,8 @@ export interface DataTableConf {
   pk?: string // 主键列，默认 'id'
   pkAuto?: boolean // 主键是否自增（SERIAL）。TEXT 主键为 false，需用户填
   readonly?: string[] // 只读列（编辑表单不渲染、INSERT/UPDATE 排除）
+  hidden?: string[] // 列表**不展示**的列（编辑弹窗仍可维护）——用于公式这类对人不友好但需保留的字段
+  hint?: string // 表级说明，显示在列表标题下方（讲清这张表怎么看、怎么填）
   json?: string[] // JSON 文本列
   fk?: Record<string, { table: string; label: string }> // 外键列 → 引用表 + 显示列
   overwriteCascade?: string[] // 覆盖导入时先清空这些从表（被本表外键依赖的表）
@@ -150,6 +152,14 @@ export const DATA_TABLES: DataTableConf[] = [
     pkAuto: true,
     // formula_raw 是源表原始公式，仅作追溯参考，运行时不参与计算（真正生效的是 formula）
     readonly: ['created_at', 'updated_at', 'formula_raw'],
+    // 「计算式」是给机器看的英文变量写法（month_wage/176*fp_coef），列表里不展示，
+    // 改由 formula_text 显示白话说明；要改算式时进「编辑」弹窗改。
+    hidden: ['formula', 'formula_raw'],
+    hint:
+      '定额值有两种填法：① 直接填固定数字；② 在「计算式」里写随参数联动的算式（如 month_wage/176*fp_coef），' +
+      '引擎运行时会用后台参数现算。计算式可用 3 个变量：month_wage（月工资基数）、fp_coef（功能点系数）、' +
+      'wage_ratio（运维单价调整系数）。列表里的「计算说明」就是算式的白话翻译，只是给人看的、不参与计算；' +
+      '改了工资基数或调整系数后，采用算式的条目会自动跟着变，直接填数字的条目不受影响。',
   },
   {
     key: 'om_station_types',
@@ -337,8 +347,9 @@ export const DATA_LABELS: Record<string, string> = {
   'om_quota_items.quota': '定额值(元/月)',
   'om_quota_items.kind': '类别',
   'om_quota_items.point_based': '按点位数计价',
-  'om_quota_items.formula': '推导式(可编辑)',
-  'om_quota_items.formula_raw': '源表公式(参考)',
+  'om_quota_items.formula': '计算式（变量写法）',
+  'om_quota_items.formula_text': '计算说明',
+  'om_quota_items.formula_raw': '源表原式（仅参考）',
   'om_quota_items.source': '来源',
   'om_quota_items.note': '说明',
   'om_quota_items.seq': '排序',

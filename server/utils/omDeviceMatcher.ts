@@ -174,3 +174,119 @@ export function matchDevice(
   res.matched = engine === 'quota' ? !!res.quota_ref : !!res.c1_category
   return res
 }
+
+// ── 站点筛选：管理处 → 子站 两级多选 ──────────────────────────────
+// 页面要按站点挑设备（照搬设备价格库导出弹窗的两级勾选）。
+// 选择项编码成 `管理处::子站`，子站为 * 表示「该管理处全部子站」。
+
+/** 「该管理处全部子站」的通配值 */
+export const SITE_ANY = '*'
+
+export interface SiteSubNode {
+  name: string
+  count: number
+}
+export interface SiteNode {
+  station: string
+  /** 该管理处下各子站设备行数合计（不含被排除的汇总站） */
+  count: number
+  subsites: SiteSubNode[]
+}
+export interface SiteSel {
+  station: string
+  subsite: string
+}
+
+/**
+ * 从设备行汇总出「管理处 → 子站」树。
+ * `is_summary` 为真的站点要在**取数之前**就排除掉 —— 它是各管理处的
+ * 「全站设备汇总」行，与明细重复，选中会让金额翻倍。
+ * （总调中心没有真实子站，它的汇总站 `is_summary` 为 false，属正常站点，保留。）
+ */
+export function buildSiteTree(
+  rows: Array<{ station?: unknown; subsite?: unknown; is_summary?: unknown }>
+): SiteNode[] {
+  const byStation = new Map<string, Map<string, number>>()
+  for (const r of rows) {
+    if (r.is_summary === true) continue
+    const station = String(r.station ?? '').trim()
+    if (!station) continue
+    const sub = String(r.subsite ?? '').trim() || '（直属）'
+    let m = byStation.get(station)
+    if (!m) {
+      m = new Map()
+      byStation.set(station, m)
+    }
+    m.set(sub, (m.get(sub) || 0) + 1)
+  }
+  const zh = (a: string, b: string) => a.localeCompare(b, 'zh-Hans-CN')
+  return [...byStation.entries()]
+    .map(([station, m]) => {
+      const subsites = [...m.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => zh(a.name, b.name))
+      return { station, subsites, count: subsites.reduce((a, s) => a + s.count, 0) }
+    })
+    .sort((a, b) => zh(a.station, b.station))
+}
+
+/** 解析 `sites` 查询参数（`管理处::子站`，可重复或逗号分隔；子站省略即该管理处全部） */
+export function parseSiteSelection(raw: unknown): SiteSel[] {
+  const parts = Array.isArray(raw) ? raw.map(String) : String(raw ?? '').split(',')
+  const out: SiteSel[] = []
+  for (const p of parts) {
+    let v = String(p || '').trim()
+    if (!v) continue
+    try {
+      v = decodeURIComponent(v)
+    } catch {
+      /* 非法转义则按原样处理 */
+    }
+    const i = v.indexOf('::')
+    const station = (i >= 0 ? v.slice(0, i) : v).trim()
+    const subsite = ((i >= 0 ? v.slice(i + 2) : '') || '').trim() || SITE_ANY
+    if (!station) continue
+    out.push({ station, subsite })
+  }
+  return out
+}
+
+/** 站点选择 → WHERE 片段（`?` 占位符，交由 db 包装层转 $n）；空选择返回 TRUE（即不限） */
+export function buildSiteWhere(sites: SiteSel[]): { sql: string; params: string[] } {
+  if (!sites.length) return { sql: 'TRUE', params: [] }
+  const ors: string[] = []
+  const params: string[] = []
+  for (const s of sites) {
+    if (s.subsite === SITE_ANY) {
+      ors.push('station = ?')
+      params.push(s.station)
+    } else {
+      ors.push('(station = ? AND subsite = ?)')
+      params.push(s.station, s.subsite)
+    }
+  }
+  return { sql: `(${ors.join(' OR ')})`, params }
+}
+
+/** 站点选择 → 人类可读摘要（用于页面与接口回显） */
+export function describeSiteSelection(sites: SiteSel[], tree: SiteNode[]): string {
+  if (!sites.length) return '全部站点'
+  const parts: string[] = []
+  for (const s of sites) {
+    if (s.subsite === SITE_ANY) parts.push(`${s.station}（全部子站）`)
+    else parts.push(`${s.station} · ${s.subsite}`)
+  }
+  const rows = countSelectedRows(sites, tree)
+  return `${parts.join('、')}（共 ${rows.toLocaleString('zh-CN')} 台/套）`
+}
+
+/** 站点选择命中的设备行数（用于页面显示「已选 N 行」） */
+export function countSelectedRows(sites: SiteSel[], tree: SiteNode[]): number {
+  if (!sites.length) return tree.reduce((a, n) => a + n.count, 0)
+  let n = 0
+  for (const sel of sites) {
+    const node = tree.find((t) => t.station === sel.station)
+    if (!node) continue
+    if (sel.subsite === SITE_ANY) n += node.count
+    else n += node.subsites.find((s) => s.name === sel.subsite)?.count || 0
+  }
+  return n
+}

@@ -6,8 +6,8 @@ import { enumFor } from '~/server/config/dataTables'
 
 const { can, api, token } = useAuth()
 
-interface ColMeta { name: string; label: string; uiType: string; nullable: boolean; readonly: boolean; isPk: boolean; pkAuto: boolean; isFk: boolean; fkTable?: string; fkLabel?: string }
-interface TableConf { key: string; label: string; category: string }
+interface ColMeta { name: string; label: string; uiType: string; nullable: boolean; readonly: boolean; hidden: boolean; isPk: boolean; pkAuto: boolean; isFk: boolean; fkTable?: string; fkLabel?: string }
+interface TableConf { key: string; label: string; category: string; hint?: string }
 interface Category { key: string; label: string }
 
 const categories = ref<Category[]>([])
@@ -112,6 +112,10 @@ function displayVal(col: ColMeta, val: any): string {
 
 // ── 新增/编辑（弹窗表单，替代原行内编辑）──
 const editableColumns = computed(() => columns.value.filter((c) => !c.readonly))
+/** 列表展示的列：hidden 的字段（如英文变量写法的公式）只在编辑弹窗里出现 */
+const visibleColumns = computed(() => columns.value.filter((c) => !c.hidden))
+/** 当前表的说明（告诉管理员这张表怎么看、怎么填） */
+const activeHint = computed(() => tables.value.find((t) => t.key === activeTable.value)?.hint || '')
 const formTitle = computed(() => {
   const t = tables.value.find((x) => x.key === activeTable.value)?.label || ''
   return (formMode.value === 'add' ? '新增' : '编辑') + ' · ' + t
@@ -275,18 +279,23 @@ onMounted(loadMeta)
             <button class="rounded-lg border border-gray-200 px-2 py-1 text-xs text-gray-600 disabled:opacity-40" :disabled="page >= totalPages" @click="page++; loadTable()">下一页</button>
           </div>
 
+          <!-- 表级说明：讲清这张表怎么看、怎么填（来自 dataTables.ts 的 hint） -->
+          <p v-if="activeHint" class="mb-3 rounded-lg border border-blue-100 bg-blue-50/60 px-3 py-2 text-xs leading-relaxed text-gray-600">
+            {{ activeHint }}
+          </p>
+
           <div class="table-scroll rounded-xl border border-gray-100">
             <table class="w-full text-left text-sm">
               <thead class="bg-gray-50 text-xs text-gray-500">
                 <tr>
-                  <th v-for="c in columns" :key="c.name" class="whitespace-nowrap px-3 py-2 font-medium">{{ c.label }}<span v-if="c.isPk" class="text-gray-300"> #</span></th>
+                  <th v-for="c in visibleColumns" :key="c.name" class="whitespace-nowrap px-3 py-2 font-medium">{{ c.label }}<span v-if="c.isPk" class="text-gray-300"> #</span></th>
                   <th v-if="can('data:edit') || can('data:delete')" class="sticky right-0 z-20 bg-gray-50 px-3 py-2 font-medium">操作</th>
                 </tr>
               </thead>
               <tbody>
                 <!-- 数据行 -->
                 <tr v-for="row in rows" :key="row[primaryKey]" class="border-t border-gray-100 bg-white hover:bg-gray-50">
-                  <td v-for="c in columns" :key="c.name" class="px-3 py-2 align-top">
+                  <td v-for="c in visibleColumns" :key="c.name" class="px-3 py-2 align-top">
                     <span v-if="c.isFk" class="block max-w-[180px] truncate" :title="fkLabel(c.name, row[c.name])">{{ fkLabel(c.name, row[c.name]) }}</span>
                     <span
                       v-else-if="c.uiType === 'json'"
@@ -303,7 +312,7 @@ onMounted(loadMeta)
 
                 <!-- 空数据提示 -->
                 <tr v-if="!rows.length">
-                  <td :colspan="columns.length + 1" class="px-3 py-12 text-center text-sm text-gray-400">暂无数据，点右上角「+ 新增」或「导入 Excel」开始维护</td>
+                  <td :colspan="visibleColumns.length + 1" class="px-3 py-12 text-center text-sm text-gray-400">暂无数据，点右上角「+ 新增」或「导入 Excel」开始维护</td>
                 </tr>
               </tbody>
             </table>
