@@ -486,6 +486,8 @@ CREATE TABLE IF NOT EXISTS om_wage_base (
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- 老库补列（幂等；新库已在 CREATE TABLE 里带上）。缺了它 repairOmSeed() 会 UPDATE 不存在的列 → 全站 500。
+ALTER TABLE om_wage_base ADD COLUMN IF NOT EXISTS usage VARCHAR(16) NOT NULL DEFAULT 'c1';
 
 CREATE TABLE IF NOT EXISTS om_factors (
   id           SERIAL PRIMARY KEY,
@@ -509,6 +511,7 @@ CREATE TABLE IF NOT EXISTS om_rate_items (
   id           SERIAL PRIMARY KEY,
   group_key    VARCHAR(64) NOT NULL,                  -- regulation / nonlabor / measure / overhead / profit / tax / spare / mgmt_service
   group_name   VARCHAR(128),
+  engine       VARCHAR(16) NOT NULL DEFAULT 'c1',     -- 适用引擎：c1 / quota / both（两法尾部费用结构不同，不能混用）
   name         VARCHAR(128) NOT NULL,
   rate         DOUBLE PRECISION NOT NULL DEFAULT 0,
   unit         VARCHAR(16) NOT NULL DEFAULT 'ratio',  -- ratio 费率 / yuan 金额
@@ -520,6 +523,8 @@ CREATE TABLE IF NOT EXISTS om_rate_items (
   updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_omr_group ON om_rate_items(group_key);
+-- 老库补列（幂等；新库已在 CREATE TABLE 里带上）。缺了它 repairOmSeed() 会 UPDATE 不存在的列 → 全站 500。
+ALTER TABLE om_rate_items ADD COLUMN IF NOT EXISTS engine VARCHAR(16) NOT NULL DEFAULT 'c1';
 
 CREATE TABLE IF NOT EXISTS om_c1_benchmarks (
   id         SERIAL PRIMARY KEY,
@@ -537,19 +542,26 @@ CREATE TABLE IF NOT EXISTS om_c1_benchmarks (
 CREATE INDEX IF NOT EXISTS idx_omc1_cat ON om_c1_benchmarks(category);
 
 CREATE TABLE IF NOT EXISTS om_quota_items (
-  id         SERIAL PRIMARY KEY,
-  name       VARCHAR(255) NOT NULL,
-  unit       VARCHAR(32) NOT NULL DEFAULT '元',
-  quota      DOUBLE PRECISION NOT NULL DEFAULT 0,     -- 定额值（元/月）
-  kind       VARCHAR(16) NOT NULL DEFAULT '硬件',      -- 硬件 / 软件（决定取费调整系数）
-  source     TEXT,
-  note       TEXT,
-  seq        INTEGER NOT NULL DEFAULT 0,
-  is_active  BOOLEAN NOT NULL DEFAULT true,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  id           SERIAL PRIMARY KEY,
+  name         VARCHAR(255) NOT NULL,
+  unit         VARCHAR(32) NOT NULL DEFAULT '元',
+  quota        DOUBLE PRECISION NOT NULL DEFAULT 0,    -- 定额值（元/月）
+  kind         VARCHAR(16) NOT NULL DEFAULT '硬件',     -- 硬件 / 软件（决定取费调整系数）
+  point_based  BOOLEAN NOT NULL DEFAULT false,         -- 按「点位数」计价（软件类定额：PLC应用系统 / UNITY PRO）
+  formula      TEXT,                                   -- 推导式（后台可编辑，运行期现算；为空则用 quota 定值）
+  formula_raw  TEXT,                                   -- 源表原公式（只读，仅追溯用，不参与计算）
+  source       TEXT,
+  note         TEXT,
+  seq          INTEGER NOT NULL DEFAULT 0,
+  is_active    BOOLEAN NOT NULL DEFAULT true,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_omq_name ON om_quota_items(name);
+-- 老库补列（幂等；新库已在 CREATE TABLE 里带上）。缺了它 repairOmSeed() 会 UPDATE 不存在的列 → 全站 500。
+ALTER TABLE om_quota_items ADD COLUMN IF NOT EXISTS point_based BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE om_quota_items ADD COLUMN IF NOT EXISTS formula TEXT;
+ALTER TABLE om_quota_items ADD COLUMN IF NOT EXISTS formula_raw TEXT;
 
 CREATE TABLE IF NOT EXISTS om_station_types (
   id          SERIAL PRIMARY KEY,
