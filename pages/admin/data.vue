@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, reactive, onMounted } from 'vue'
 import { useAuth } from '~/composables/useAuth'
+// 枚举列的中文映射（如 om_factors.engine 的 c1 → C.1 工作量法），纯静态配置
+import { enumFor } from '~/server/config/dataTables'
 
 const { can, api, token } = useAuth()
 
@@ -96,6 +98,9 @@ function displayVal(col: ColMeta, val: any): string {
     return n ? `共 ${n} 项` : '—'
   }
   if (col.uiType === 'date') return String(val).replace('T', ' ').slice(0, 16)
+  // 枚举列渲染成中文（存的是 c1 / quota / ratio 这类编码，不给用户看原文）
+  const en = enumFor(activeTable.value, col.name)
+  if (en && en[String(val)] != null) return en[String(val)]
   const s = String(val)
   // 兜底：文本列里存的 JSON 内容同样只显示摘要（防止配置漏标 json 的列露出原文）
   if (/^[[{]/.test(s.trim())) {
@@ -352,6 +357,10 @@ onMounted(loadMeta)
             </select>
             <!-- JSON 配置：结构化行编辑，页面不出现 JSON 原文 -->
             <JsonFieldEditor v-else-if="c.uiType === 'json'" v-model="formCopy[c.name]" />
+            <!-- 枚举列：给中文下拉，存库仍是编码（如 适用引擎 c1 / quota） -->
+            <select v-else-if="enumFor(activeTable, c.name)" v-model="formCopy[c.name]" class="w-full rounded-lg border border-gray-200 px-2 py-1.5 text-sm">
+              <option v-for="(zh, code) in enumFor(activeTable, c.name)" :key="code" :value="code">{{ zh }}</option>
+            </select>
             <label v-else-if="c.uiType === 'boolean'" class="flex items-center gap-2 text-sm text-gray-700">
               <input type="checkbox" v-model="formCopy[c.name]" /> {{ formCopy[c.name] ? '是' : '否' }}
             </label>
