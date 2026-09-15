@@ -2,12 +2,23 @@
 //   第一步 apply=0：解析 + 校验，返回预览报告（不写库）
 //   第二步 apply=1：按 mode(overwrite|incremental) 落库
 // POST → data:create
+//
+// 【审计】批量导入是「一次操作改变上百行参数」的最大变更源，必须留痕。
+// 逐行写日志会刷出上千条把审计页淹掉，所以这里每个批次只落 **一条汇总记录**：
+//   谁、什么时候、用哪个文件、覆盖还是增量、导入前多少行 → 导入后多少行。
+// 覆盖导入尤其要记 —— 它先 DELETE 整表，是全站最具破坏性的一个动作。
 import { readMultipartFormData } from 'h3'
 import * as XLSX from 'xlsx'
 import db from '../../../../utils/db'
 import { getColumns, assertTable, validateBody, insertRow, updateRow } from '../../../../utils/adminData'
 // getTableConf 定义在 config/dataTables.ts，不在 utils/adminData.ts（Rollup 会报 MISSING_EXPORT）
 import { getTableConf } from '../../../../config/dataTables'
+import { logOperation } from '../../../../utils/logOperation'
+
+async function countRows(table: string): Promise<number> {
+  const r = (await db.prepare(`SELECT COUNT(*)::int AS c FROM "${table}"`).get()) as any
+  return Number(r?.c ?? 0)
+}
 
 function rowExists(table: string, pk: string, id: any): Promise<boolean> {
   return db
@@ -62,6 +73,26 @@ export default defineEventHandler(async (event) => {
   }
 
   // ── 第二步：落库 ──
+  const beforeCount = await countRows(table)
+
+  // 批次审计的统一出口：无论走哪条分支，最后都记一条
+  const logBatch = async (imported: number, logMode: string) => {
+    const afterCount = await countRows(table)
+    await logOperation({
+      event,
+      module: 'admin/data',
+      entityType: table,
+      entityId: 'batch',
+      action: 'update',
+      changes: [
+        { field: '操作', label: '操作', old: null, new: logMode },
+        { field: '文件', label: '文件', old: null, new: file.filename || '（未命名）' },
+        { field: '影响行数', label: '影响行数', old: `${beforeCount} 条（导入前）`, new: `${imported} 条（导入后共 ${afterCount} 条）` }
+      ],
+      remark: `Excel 批量导入（${conf.label}）`
+    })
+  }
+
   if (mode === 'overwrite') {
     await db.transaction(async () => {
       for (const dep of conf.overwriteCascade || []) {
@@ -75,6 +106,7 @@ export default defineEventHandler(async (event) => {
         if (res.errors.length) throw createError({ statusCode: 400, statusMessage: `第 ${rawRows.indexOf(raw) + 2} 行：${res.errors.join('；')}` })
       }
     })
+    await logBatch(rawRows.length, '覆盖导入（先清空整表再写入）')
     return { mode, imported: rawRows.length, skipped: 0, ok: true }
   }
 
@@ -98,5 +130,6 @@ export default defineEventHandler(async (event) => {
     }
   }
   if (errs.length) throw createError({ statusCode: 400, statusMessage: errs.slice(0, 10).join('；') })
+  await logBatch(imported, '增量导入（按主键新增/更新）')
   return { mode, imported, skipped, ok: true }
 })

@@ -6,7 +6,7 @@ export default defineEventHandler(async (event) => {
   const table = (event as any).context.params?.table
   assertTable(table)
   const body = await readBody(event)
-  const res = await insertRow(table, body)
+  const res = await insertRow(table, body, event)
   if (res.errors.length) throw createError({ statusCode: 400, statusMessage: res.errors.join('；') })
   return { id: res.id, ok: true }
 })

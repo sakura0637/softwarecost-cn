@@ -279,13 +279,20 @@ export const DATA_TABLES: DataTableConf[] = [
     category: 'om',
     pk: 'id',
     pkAuto: true,
-    readonly: ['created_at', 'updated_at', 'result_json'],
+    // result_json / 两份快照都是系统写入的大 JSON（单个存档可达数 MB），不接受人工编辑
+    readonly: ['created_at', 'updated_at', 'result_json', 'params_snapshot', 'items_snapshot'],
+    // 列表里不展开快照本体，否则一页就能拖出几十 MB
+    hidden: ['params_snapshot', 'items_snapshot', 'result_json'],
     fk: { wage_base_id: { table: 'om_wage_base', label: 'industry' } },
-    hint: `测算存档表：每保存一次测算就落一条记录，记录当时用了哪套参数、算出了什么结果。
-⚠️ 本表不参与任何计算 —— 改这里不会影响别人再算一次的结果，它只是历史快照。
-【各列】engine 测算引擎（C.1 工作量法 / 定额单价法）；wage_base_id 当时锁定的人工成本基数行；result_json 完整计算结果（只读，由系统写入，展开可查明细）。
-【口径提醒】因为它是快照，同一份清单在不同参数下会算出不同金额；对账时务必先确认当时的参数版本，别拿旧存档直接和现算结果比对。
-【想复现某个存档】按 wage_base_id 能找回当时的人工成本基数，其余参数无法回溯（后台参数是覆盖式修改），这是本表目前的局限。`,
+    hint: `测算存档表：每保存一次测算就落一条记录。本表不参与任何计算，它只是历史快照。
+【怎么产生】在「运维费用测算」页填存档名称后点「保存当前测算」。金额由服务端重算写入，不采信页面上的数字 —— 存档是拿去对账的凭证。
+【核心是两份快照，不在本表直接看】保存时会把两样东西整份存下来：
+· 参数快照 = 当时生效的全部计价参数（人工成本基数 / 调整因子 / 费率项 / C.1 基准 / 定额单价库 / 站点类型）。因为参数表是覆盖式修改的，不存快照事后再也回不到当时那套口径。
+· 清单快照 = 当时参与测算的每一行设备。
+【复现怎么用】在测算页的存档列表点「复现」：① 用存档参数重算，金额必须与存档一致（证明这个数站得住）；② 再用当前参数重算，给出差额与差额比例；③ 列出两套参数的具体差异（哪张表、哪一条、改前改后）。这就回答了「今天再算会差多少、是哪个参数造成的」。
+【注意】启用快照功能（2026-09-15）之前保存的存档没有快照，复现时会明确提示「无法复现当时口径」。
+【口径提醒】同一份清单在不同参数下金额不同；对账时先看存档里那份参数快照，别拿旧存档直接与现算结果比对。
+【想改参数】改的是各参数表本身，改完会在「审计日志」留痕（谁、何时、把哪个值改成了什么）。`,
   },
 ]
 
@@ -475,6 +482,15 @@ export const DATA_LABELS: Record<string, string> = {
   'om_projects.wage_base_id': '人工成本基数',
   'om_projects.remark': '备注',
   'om_projects.result_json': '计算结果',
+  'om_projects.params_snapshot': '参数快照',
+  'om_projects.items_snapshot': '清单快照',
+  'om_projects.source_label': '清单来源',
+  'om_projects.site_label': '站点范围',
+  'om_projects.mgmt_service_rate': '管理服务费率',
+  'om_projects.item_count': '清单行数',
+  'om_projects.unresolved_count': '未匹配行数',
+  'om_projects.total_amount': '存档金额(元)',
+  'om_projects.operator_name': '保存人',
   'om_projects.created_at': '创建时间',
   'om_projects.updated_at': '更新时间',
 

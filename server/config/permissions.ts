@@ -38,6 +38,10 @@ export const PERMISSION_MODULES: PermissionModule[] = [
     routes: ['/api/admin/roles'] },
   { key: 'admin-permissions', name: '权限管理', actions: ['view', 'edit'],
     routes: ['/api/admin/permissions'] },
+  // 全局操作审计：只读台账 + 按记录所属模块动态判权的撤销。
+  // 不放进 USER_PERMISSION_PATTERNS —— 普通用户看不到别人的全部写操作。
+  { key: 'admin-logs', name: '操作审计', actions: ['view', 'edit'],
+    routes: ['/api/admin/logs'] },
 ]
 
 export const ACTION_NAMES: Record<string, string> = {
@@ -118,6 +122,9 @@ export const ROUTE_PERMISSION_RULES: Array<{ method: string; pattern: string; co
   { method: 'POST', pattern: '/api/admin/stations', code: 'devices:edit', note: '站点维护视为修改' },
   { method: 'POST', pattern: '/api/admin/station-devices', code: 'devices:edit', note: '子站设备维护视为修改' },
   { method: 'POST', pattern: '/api/admin/operation-logs/:id/revert', code: 'devices:edit', note: '撤销操作' },
+  // 全局审计的撤销：接口内部还会按**记录所属模块**再判一次（devices:edit / data:edit / om:edit），
+  // 这里只把「POST 落到 create」的错误默认映射纠正掉，避免未登记直接 403。
+  { method: 'POST', pattern: '/api/admin/logs/:id/revert', code: 'admin-logs:edit', note: '撤销操作（内部再按模块判权）' },
   // —— 角色下的权限：路径在 roles 下，但归属「权限管理」模块
   { method: 'GET', pattern: '/api/admin/roles/:id/permissions', code: 'admin-permissions:view' },
   { method: 'PUT', pattern: '/api/admin/roles/:id/permissions', code: 'admin-permissions:edit' },
@@ -138,6 +145,10 @@ export const ROUTE_PERMISSION_RULES: Array<{ method: string; pattern: string; co
   { method: 'POST', pattern: '/api/om/devices', code: 'om:view', note: '只读取数（站点集合用 POST 传参）' },
   // 单行追溯：把一行清单放进请求体里回问「它是怎么算出来的」，纯只读、不落库
   { method: 'POST', pattern: '/api/om/trace', code: 'om:view', note: '只读追溯（清单行用 POST 传参）' },
+  // 导出 Excel：清单行用请求体传（可达 8000+ 行），但语义是只读导出，不产生数据
+  { method: 'POST', pattern: '/api/om/export', code: 'om:view', note: '只读导出（清单用 POST 传参）' },
+  // 复现存档：重算并比对，纯只读。默认 POST→om:create 会误判，必须显式登记
+  { method: 'POST', pattern: '/api/om/projects/:id/reproduce', code: 'om:view', note: '只读复现（重算比对，不落库）' },
 ]
 
 /** HTTP 方法 → 动作 的默认映射（模块前缀匹配后套用） */

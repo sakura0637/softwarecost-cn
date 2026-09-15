@@ -1,6 +1,7 @@
 import db from '../../../../utils/db'
 import { requirePerm } from '../../../../utils/auth'
 import { createError, getRouterParam, readBody } from 'h3'
+import { logOperation } from '../../../../utils/logOperation'
 
 // 编辑某标准的单条参数明细（需 standards:edit 权限）
 export default defineEventHandler(async (event) => {
@@ -12,6 +13,7 @@ export default defineEventHandler(async (event) => {
   if (!(await db.prepare('SELECT 1 FROM standard_parameters WHERE id = ? AND standard_id = ?').get(pid, id))) {
     throw createError({ statusCode: 404, statusMessage: '参数不存在或不属于该标准' })
   }
+  const before = await db.prepare('SELECT * FROM standard_parameters WHERE id = ?').get(pid)
   const valuesRaw = typeof b.values === 'string' ? b.values : JSON.stringify(b.values ?? [])
   await db
     .prepare(
@@ -28,5 +30,15 @@ export default defineEventHandler(async (event) => {
       pid,
       id
     )
+  await logOperation({
+    event,
+    module: 'standards',
+    entityType: 'standard_parameters',
+    entityId: pid,
+    action: 'update',
+    before,
+    after: await db.prepare('SELECT * FROM standard_parameters WHERE id = ?').get(pid),
+    remark: `编辑标准参数明细（所属标准 ${id}）`
+  })
   return { ok: true }
 })

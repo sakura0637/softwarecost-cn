@@ -3,6 +3,7 @@
 import db from './db'
 import { createError } from 'h3'   // 与 server/utils/auth.ts 一致：显式导入，不依赖 Nuxt 自动导入
 import { DATA_TABLES, DATA_CATEGORIES, getTableConf, labelFor, DataTableConf } from '../config/dataTables'
+import { logOperation } from './logOperation'
 
 export interface ColumnMeta {
   name: string
@@ -154,7 +155,19 @@ export async function listRows(
   return { columns, rows, total, page, pageSize }
 }
 
-export async function insertRow(key: string, body: any): Promise<{ id?: any; errors: string[] }> {
+// ── 审计挂钩（2026-09-15）────────────────────────────────────────
+// 增删改一律留痕：参数表是**覆盖式修改**的，改完之后没人知道「原来是多少」。
+// 审计只在 dataTables 注册表内的表上生效（assertTable 已保证），且 event 缺省时不记录
+// —— 让 Excel 导入等批量路径可以自行决定是否记账，而不是被动写出一堆噪声。
+async function snapshotRow(key: string, pk: string, id: any): Promise<any | null> {
+  try {
+    return (await db.prepare(`SELECT * FROM "${key}" WHERE "${pk}"=?`).get(id)) as any
+  } catch {
+    return null
+  }
+}
+
+export async function insertRow(key: string, body: any, event?: any): Promise<{ id?: any; errors: string[] }> {
   const columns = await getColumns(key)
   const conf = assertTable(key)
   const pk = conf.pk || 'id'
@@ -163,25 +176,48 @@ export async function insertRow(key: string, body: any): Promise<{ id?: any; err
   if (!cols.length) return { errors: ['没有任何可写入的字段'] }
   const sql = `INSERT INTO "${key}" (${cols.map((c) => `"${c}"`).join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`
   const r = await db.prepare(sql).run(...vals)
+  if (event && r.lastID != null) {
+    await logOperation({
+      event, module: 'admin/data', entityType: key, entityId: r.lastID, action: 'create',
+      after: await snapshotRow(key, pk, r.lastID),
+      remark: `新增 1 条（${conf.label}）`,
+    })
+  }
   return { id: r.lastID, errors: [] }
 }
 
-export async function updateRow(key: string, id: any, body: any): Promise<{ changes: number; errors: string[] }> {
+export async function updateRow(key: string, id: any, body: any, event?: any): Promise<{ changes: number; errors: string[] }> {
   const columns = await getColumns(key)
   const conf = assertTable(key)
   const pk = conf.pk || 'id'
   const { cols, vals, errors } = pickEditable(body, columns, { isUpdate: true, pk })
   if (errors.length) return { changes: 0, errors }
   if (!cols.length) return { changes: 0, errors: [] }
+  // 先取改前整行：改完就再也拿不到了（这是审计的关键，不能省）
+  const before = event ? await snapshotRow(key, pk, id) : null
   const sql = `UPDATE "${key}" SET ${cols.map((c) => `"${c}"=?`).join(', ')} WHERE "${pk}"=?`
   const r = await db.prepare(sql).run(...vals, id)
+  if (event && (r.changes ?? 0) > 0) {
+    await logOperation({
+      event, module: 'admin/data', entityType: key, entityId: id, action: 'update',
+      before, after: await snapshotRow(key, pk, id),
+      remark: `修改（${conf.label}）`,
+    })
+  }
   return { changes: r.changes ?? 0, errors: [] }
 }
 
-export async function deleteRow(key: string, id: any): Promise<{ changes: number }> {
+export async function deleteRow(key: string, id: any, event?: any): Promise<{ changes: number }> {
   const conf = assertTable(key)
   const pk = conf.pk || 'id'
+  const before = event ? await snapshotRow(key, pk, id) : null
   const r = await db.prepare(`DELETE FROM "${key}" WHERE "${pk}"=?`).run(id)
+  if (event && (r.changes ?? 0) > 0) {
+    await logOperation({
+      event, module: 'admin/data', entityType: key, entityId: Number(id), action: 'delete',
+      before, remark: `删除（${conf.label}）`,
+    })
+  }
   return { changes: r.changes ?? 0 }
 }
 

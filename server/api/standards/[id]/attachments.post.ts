@@ -3,6 +3,7 @@ import { getUserId } from '../../../utils/auth'
 import { createError, getRouterParam, readMultipartFormData } from 'h3'
 import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { logOperation } from '../../../utils/logOperation'
 
 // 上传标准附件（需登录）。文件落盘到 data/uploads/standards/，元数据入 standard_attachments 表。
 export default defineEventHandler(async (event) => {
@@ -29,6 +30,22 @@ export default defineEventHandler(async (event) => {
       'INSERT INTO standard_attachments (standard_id, file_name, stored_name, file_size, mime_type) VALUES (?, ?, ?, ?, ?)'
     )
     .run(standardId, original, storedName, file.data.length, file.type || 'application/octet-stream')
+
+  // 附件是「记日志但不提供撤销」的实体：磁盘文件已落地，快照只有元数据，删了无法还原。
+  // 审计页据此不渲染撤销按钮（见 config/audit.ts NON_REVERTIBLE_ENTITIES）。
+  await logOperation({
+    event,
+    module: 'standards',
+    entityType: 'standard_attachments',
+    entityId: info.lastID,
+    action: 'create',
+    changes: [
+      { field: '文件名', label: '文件名', new: original },
+      { field: '所属标准', label: '所属标准', new: standardId },
+      { field: '大小', label: '大小', new: `${(file.data.length / 1024).toFixed(1)} KB` }
+    ],
+    remark: '上传标准附件'
+  })
 
   return { ok: true, id: info.lastID }
 })

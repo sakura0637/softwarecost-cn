@@ -1,6 +1,7 @@
 import db from '../../../utils/db'
 import { requirePerm } from '../../../utils/auth'
 import { createError, getRouterParam, readBody } from 'h3'
+import { logOperation } from '../../../utils/logOperation'
 
 // 新增某标准的参数明细（需 standards:edit 权限）
 export default defineEventHandler(async (event) => {
@@ -14,7 +15,7 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 400, statusMessage: '参数名必填' })
   }
   const valuesRaw = typeof b.values === 'string' ? b.values : JSON.stringify(b.values ?? [])
-  await db
+  const ins = await db
     .prepare(
       'INSERT INTO standard_parameters (standard_id, param_category, param_name, param_type, unit, values, description, seq) VALUES (?,?,?,?,?,?,?,?)'
     )
@@ -28,5 +29,14 @@ export default defineEventHandler(async (event) => {
       b.description || '',
       Number(b.seq) || 0
     )
+  await logOperation({
+    event,
+    module: 'standards',
+    entityType: 'standard_parameters',
+    entityId: ins.lastID,
+    action: 'create',
+    after: await db.prepare('SELECT * FROM standard_parameters WHERE id = ?').get(ins.lastID),
+    remark: `新增标准参数明细（所属标准 ${id}）`
+  })
   return { ok: true }
 })

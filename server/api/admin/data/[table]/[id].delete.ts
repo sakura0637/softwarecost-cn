@@ -4,7 +4,7 @@ import { deleteRow, assertTable } from '../../../../utils/adminData'
 export default defineEventHandler(async (event) => {
   const params = (event as any).context.params
   assertTable(params.table)
-  const res = await deleteRow(params.table, params.id)
+  const res = await deleteRow(params.table, params.id, event)
   if (res.changes === 0) throw createError({ statusCode: 404, statusMessage: '未找到该记录' })
   return { changes: res.changes, ok: true }
 })

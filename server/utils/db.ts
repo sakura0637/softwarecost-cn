@@ -309,13 +309,19 @@ JOIN devices  d  ON d.id  = sd.device_id
 JOIN stations s  ON s.id  = sd.subsite_id
 LEFT JOIN stations p ON p.id = s.parent_id;
 
--- ── 操作记录（2026-09-01 新增：记录站点/设备/对照的增删改审计）────────
+-- ── 操作记录（2026-09-01 新增；2026-09-15 泛化到全部参数表）────────
+-- module：归属模块（admin/devices 设备三表 / admin/data 数据维护 / om 运维测算）
+-- entity_type：实体或表名（station / device / station_device，或数据维护的真实表名）
+-- ⚠️ entity_type 必须留够长度：数据维护的表名最长 21 字（estimation_parameters），
+--    原 VARCHAR(16) 会让这些表的审计记录**静默写不进去**（超长报错被 try-catch 吞掉）。
+-- ⚠️ entity_id 用 TEXT 而非 INTEGER：standards 表主键是文本（如 'GB/T-36964-2018'），
+--    整数列会把 Number('GB/...') = NaN 塞进去，同样静默失败。
 CREATE TABLE IF NOT EXISTS operation_logs (
   id            SERIAL PRIMARY KEY,
   module        VARCHAR(32)  NOT NULL DEFAULT 'admin/devices',
-  entity_type   VARCHAR(16)  NOT NULL,                  -- station / device / station_device
-  entity_id     INTEGER      NOT NULL,
-  action        VARCHAR(16)  NOT NULL,                  -- create / update / delete
+  entity_type   VARCHAR(64)  NOT NULL,
+  entity_id     TEXT         NOT NULL,
+  action        VARCHAR(16)  NOT NULL,                  -- create / update / delete / revert
   operator_id   INTEGER,
   operator_name VARCHAR(64),
   changes       JSONB        NOT NULL DEFAULT '[]'::jsonb,  -- [{field,label,old,new}]
@@ -324,6 +330,12 @@ CREATE TABLE IF NOT EXISTS operation_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_oplog_entity  ON operation_logs(entity_type, entity_id);
 CREATE INDEX IF NOT EXISTS idx_oplog_created ON operation_logs(created_at DESC);
+
+-- 兼容旧库：放宽列宽 / 换主键类型（旧库建表时是 VARCHAR(16) + INTEGER）。
+-- 均为幂等语句：VARCHAR 加宽与「改成同一类型」都不会报错，新库执行等于空操作。
+ALTER TABLE operation_logs ALTER COLUMN entity_type TYPE VARCHAR(64);
+ALTER TABLE operation_logs ALTER COLUMN entity_id   TYPE TEXT USING entity_id::text;
+CREATE INDEX IF NOT EXISTS idx_oplog_module  ON operation_logs(module);
 
 CREATE TABLE IF NOT EXISTS standard_attachments (
   id           SERIAL PRIMARY KEY,
@@ -638,6 +650,20 @@ CREATE TABLE IF NOT EXISTS om_project_items (
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_ompi_project ON om_project_items(project_id);
+
+-- 存档可复现（2026-09-15）：把「算这笔钱时用的那一整套参数」整份快照到存档里。
+-- 参数表是**覆盖式修改**的，事后无法回溯。不存快照，存档就只能证明「当时有这么一个数」，
+-- 却回答不了「当时用的是哪套参数、今天再算一次会不会变」——这正是与人对账时最要命的问题。
+-- params_snapshot / items_snapshot 存 JSONB：结构随 OmParams / OmItemInput 走，避免再建 6 张快照表。
+ALTER TABLE om_projects ADD COLUMN IF NOT EXISTS params_snapshot JSONB;
+ALTER TABLE om_projects ADD COLUMN IF NOT EXISTS items_snapshot JSONB;
+ALTER TABLE om_projects ADD COLUMN IF NOT EXISTS source_label VARCHAR(64);
+ALTER TABLE om_projects ADD COLUMN IF NOT EXISTS site_label TEXT;
+ALTER TABLE om_projects ADD COLUMN IF NOT EXISTS mgmt_service_rate DOUBLE PRECISION;
+ALTER TABLE om_projects ADD COLUMN IF NOT EXISTS item_count INTEGER;
+ALTER TABLE om_projects ADD COLUMN IF NOT EXISTS unresolved_count INTEGER;
+ALTER TABLE om_projects ADD COLUMN IF NOT EXISTS total_amount DOUBLE PRECISION;
+ALTER TABLE om_projects ADD COLUMN IF NOT EXISTS operator_name VARCHAR(64);
 
 CREATE TABLE IF NOT EXISTS kv (
   k TEXT PRIMARY KEY,

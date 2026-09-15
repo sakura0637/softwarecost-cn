@@ -58,6 +58,8 @@ const rows = ref<Row[]>([])
 const scaleByStation = ref(true)
 const mgmtEnabled = ref(false)
 const mgmtRate = ref<number | null>(null)
+/** 项目/测算名称：导出的表头与存档记录都用它 */
+const projectName = ref('')
 
 const params = ref<any>(null)
 const sample = ref<any>(null)
@@ -66,6 +68,7 @@ const result = shallowRef<any>(null)
 const unresolved = ref<any[]>([])
 const loading = ref(false)
 const calculating = ref(false)
+const exporting = ref(false)
 const errorMsg = ref('')
 
 // ── 设备库来源：站点筛选 ────────────────────────────────────
@@ -119,6 +122,8 @@ async function loadData() {
   loading.value = true
   errorMsg.value = ''
   page.value = 1
+  // 重新载入清单即脱离存档上下文（否则页面上还挂着「已载入存档 #x」的提示，会误导对账）
+  loadedArchive.value = null
   try {
     if (source.value === 'devices') {
       await loadSiteTree()
@@ -213,6 +218,7 @@ function clearRows() {
   unresolved.value = []
   deviceRaw.value = []
   siteLabel.value = ''
+  loadedArchive.value = null
   page.value = 1
 }
 
@@ -330,6 +336,17 @@ function rowToItem(r: Row, i: number) {
   }
 }
 
+// 提交给后端的清单负载。**字段白名单**：绝不把整行原样回传 ——
+// 8452 行时请求体已约 1.79MB，回传多余字段会直接撞上请求体上限。
+function buildPayload() {
+  return {
+    engine: engine.value,
+    wage_base_id: wageBaseId.value,
+    mgmt_service_rate: mgmtEnabled.value ? Number(mgmtRate.value) || 0 : 0,
+    items: rows.value.map(rowToItem),
+  }
+}
+
 async function calculate() {
   if (!rows.value.length) {
     result.value = null
@@ -339,19 +356,203 @@ async function calculate() {
   calculating.value = true
   errorMsg.value = ''
   try {
-    const payload = {
-      engine: engine.value,
-      wage_base_id: wageBaseId.value,
-      mgmt_service_rate: mgmtEnabled.value ? Number(mgmtRate.value) || 0 : 0,
-      items: rows.value.map(rowToItem),
-    }
-    const res: any = await api('/api/om/calculate', { method: 'POST', body: payload })
+    const res: any = await api('/api/om/calculate', { method: 'POST', body: buildPayload() })
     result.value = res.result
     unresolved.value = res.unresolved || []
   } catch (e: any) {
     errorMsg.value = e?.data?.statusMessage || e?.message || '计算失败'
   } finally {
     calculating.value = false
+  }
+}
+
+// ── 导出 Excel ────────────────────────────────────────────────
+// 刻意**不在前端拼 Excel**：导出复用后端同一个 calcOm（与测算、追溯同源），
+// 否则引擎改过而前端没同步时，导出文件会静默偏离系统里的数。
+// 导出的工作簿含 4 个 sheet：费用汇总 / 设备明细 / 未匹配清单 / 参数与出处，
+// 页脚带参数版本、导出时间、导出人 —— 收到文件的人不必再登录系统就能核对每个数字。
+async function exportExcel() {
+  if (!rows.value.length) {
+    errorMsg.value = '设备清单为空，请先录入或载入清单后再导出'
+    return
+  }
+  exporting.value = true
+  errorMsg.value = ''
+  try {
+    const blob: any = await api('/api/om/export', {
+      method: 'POST',
+      body: {
+        ...buildPayload(),
+        project_name: projectName.value || '运维费用测算',
+        source_label: source.value === 'devices' ? '设备价格库' : '示例清单',
+        site_label: source.value === 'devices' ? siteLabel.value : '',
+      },
+      responseType: 'blob',
+    })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${(projectName.value || '运维费用测算').replace(/[\\/:*?"<>|]/g, '')}_${
+      engine.value === 'c1' ? 'C1工作量法' : '定额单价法'
+    }_${new Date().toISOString().slice(0, 10)}.xlsx`
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch (e: any) {
+    errorMsg.value = e?.data?.statusMessage || e?.message || '导出失败'
+  } finally {
+    exporting.value = false
+  }
+}
+
+// ── 测算存档：保存 / 载入 / 复现 / 导出 / 删除 ─────────────────
+// 为什么要有「复现」：参数表是覆盖式修改的，改过之后没人说得清「当初那个金额是怎么来的」。
+// 存档把当时生效的整套参数快照下来，复现时用快照重算一遍 —— 能对上，才说明这个金额站得住。
+const archives = ref<any[]>([])
+const archiveLoading = ref(false)
+const savingArchive = ref(false)
+const archiveName = ref('')
+const reproLoading = ref(false)
+const reproResult = ref<any>(null)
+const showRepro = ref(false)
+/** 当前清单是否来自某个存档（用于提示，避免「以为还在看设备库数据」） */
+const loadedArchive = ref<any>(null)
+
+/** 存档清单行 → 页面 Row。与 rowToItem 严格互逆 —— 不互逆的话「载入存档」会悄悄丢字段，
+ *  表现为金额与存档对不上，而且极难查。 */
+function itemToRow(it: any): Row {
+  return {
+    station: it.station || '',
+    sheet_no: it.sheet_no ?? null,
+    category: it.category || '',
+    no: '',
+    name: it.name || '',
+    unit: it.unit || '',
+    qty: Number(it.qty) || 0,
+    category_ref: it.category_ref || '',
+    workload: it.workload ?? null,
+    quota_ref: it.quota_ref || '',
+    quota_value: it.quota_value ?? null,
+    kind: it.kind || '',
+    point_count: it.point_count ?? null,
+    billable: it.billable !== false,
+    note: it.note || '',
+  }
+}
+
+async function loadArchives() {
+  archiveLoading.value = true
+  try {
+    const res: any = await api('/api/om/projects?page_size=50')
+    archives.value = res.items || []
+  } catch (e: any) {
+    errorMsg.value = e?.data?.statusMessage || e?.message || '读取存档列表失败'
+  } finally {
+    archiveLoading.value = false
+  }
+}
+
+async function saveArchive() {
+  if (!rows.value.length) {
+    errorMsg.value = '设备清单为空，无法保存存档'
+    return
+  }
+  const name = archiveName.value.trim()
+  if (!name) {
+    errorMsg.value = '请先填写存档名称'
+    return
+  }
+  savingArchive.value = true
+  errorMsg.value = ''
+  try {
+    await api('/api/om/projects', {
+      method: 'POST',
+      body: {
+        name,
+        ...buildPayload(),
+        source_label: source.value === 'devices' ? '设备价格库' : '示例清单',
+        site_label: source.value === 'devices' ? siteLabel.value : '',
+      },
+    })
+    archiveName.value = ''
+    await loadArchives()
+  } catch (e: any) {
+    errorMsg.value = e?.data?.statusMessage || e?.message || '保存存档失败'
+  } finally {
+    savingArchive.value = false
+  }
+}
+
+async function loadArchive(a: any) {
+  errorMsg.value = ''
+  try {
+    const res: any = await api(`/api/om/projects/${a.id}?items=1`)
+    if (!res.items?.length) {
+      errorMsg.value = '该存档没有清单快照（可能是旧版本保存的），无法载入'
+      return
+    }
+    engine.value = res.project.engine === 'quota' ? 'quota' : 'c1'
+    wageBaseId.value = res.project.wageBaseId
+    const mr = res.project.mgmtServiceRate
+    mgmtEnabled.value = mr != null && Number(mr) > 0
+    mgmtRate.value = mr == null ? null : Number(mr)
+    rows.value = res.items.map(itemToRow)
+    projectName.value = res.project.name
+    loadedArchive.value = res.project
+    page.value = 1
+    await calculate()
+  } catch (e: any) {
+    errorMsg.value = e?.data?.statusMessage || e?.message || '载入存档失败'
+  }
+}
+
+async function reproduceArchive(id: number) {
+  reproLoading.value = true
+  reproResult.value = null
+  showRepro.value = true
+  try {
+    reproResult.value = await api(`/api/om/projects/${id}/reproduce`, { method: 'POST' })
+  } catch (e: any) {
+    errorMsg.value = e?.data?.statusMessage || e?.message || '复现失败'
+    showRepro.value = false
+  } finally {
+    reproLoading.value = false
+  }
+}
+
+/** 导出存档：带 project_id 让后端**用存档的参数快照**导出，
+ *  而不是当前参数 —— 否则后台改过参数后，导出的文件会和存档对不上。 */
+async function exportArchive(a: any) {
+  exporting.value = true
+  errorMsg.value = ''
+  try {
+    const blob: any = await api('/api/om/export', {
+      method: 'POST',
+      body: { project_id: a.id },
+      responseType: 'blob',
+    })
+    const url = URL.createObjectURL(blob)
+    const el = document.createElement('a')
+    el.href = url
+    el.download = `${String(a.name || '存档').replace(/[\\/:*?"<>|]/g, '')}_${
+      a.engine === 'c1' ? 'C1工作量法' : '定额单价法'
+    }_存档${a.id}.xlsx`
+    el.click()
+    URL.revokeObjectURL(url)
+  } catch (e: any) {
+    errorMsg.value = e?.data?.statusMessage || e?.message || '导出失败'
+  } finally {
+    exporting.value = false
+  }
+}
+
+async function deleteArchive(a: any) {
+  if (!confirm(`确定删除存档《${a.name}》？\n存档是历史凭证，删除后连同参数快照一起不可恢复。`)) return
+  try {
+    await api(`/api/om/projects/${a.id}`, { method: 'DELETE' })
+    if (loadedArchive.value?.id === a.id) loadedArchive.value = null
+    await loadArchives()
+  } catch (e: any) {
+    errorMsg.value = e?.data?.statusMessage || e?.message || '删除失败'
   }
 }
 
@@ -498,6 +699,8 @@ const help = computed(() => {
 const showHelp = ref(false)
 
 onMounted(loadParams)
+// 存档列表随页面一起载入：它是「这个数是怎么来的」的凭证，不该藏在需要额外点击的入口后面
+onMounted(loadArchives)
 </script>
 
 <template>
@@ -521,10 +724,28 @@ onMounted(loadParams)
         <button class="btn-primary !px-5 !py-2 !text-sm" :disabled="calculating" @click="calculate">
           {{ calculating ? '计算中…' : '开始测算' }}
         </button>
+        <button
+          class="rounded-lg border border-gray-200 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+          :disabled="exporting || !rows.length"
+          :title="rows.length ? '导出含明细、未匹配清单与全部参数出处的 Excel' : '请先载入或录入清单'"
+          @click="exportExcel"
+        >
+          {{ exporting ? '导出中…' : '导出 Excel' }}
+        </button>
       </div>
     </div>
 
     <p v-if="errorMsg" class="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-600">{{ errorMsg }}</p>
+
+    <!-- 存档上下文提示：载入存档后必须明确告知，避免误以为还在看设备库/示例清单的数据 -->
+    <p v-if="loadedArchive" class="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-2 text-xs leading-relaxed text-blue-700">
+      当前清单载自存档 <b>#{{ loadedArchive.id }}《{{ loadedArchive.name }}》</b>
+      <span class="text-blue-500">
+        （{{ loadedArchive.engineLabel }} · 保存人 {{ loadedArchive.operatorName || '—' }} · {{ String(loadedArchive.createdAt || '').slice(0, 19).replace('T', ' ') }}）
+      </span>
+      —— 参数已按该存档的快照复现，因此这里的金额可能与用当前参数现算的不同。
+      <button class="ml-1 underline hover:no-underline" @click="reproduceArchive(loadedArchive.id)">看差异</button>
+    </p>
 
     <!-- 引擎 + 基数 -->
     <div class="card mb-5 !p-4">
@@ -914,6 +1135,96 @@ onMounted(loadParams)
       </div>
     </div>
 
+    <!-- ── 测算存档（可复现）────────────────────────────────── -->
+    <div class="card mt-5 !p-6">
+      <div class="mb-4 flex flex-wrap items-end justify-between gap-3">
+        <div class="min-w-0">
+          <h2 class="text-base font-semibold text-gray-800">测算存档</h2>
+          <p class="mt-1 text-xs leading-relaxed text-gray-500">
+            保存时会把<b>当时生效的一整套参数</b>连同清单一起快照下来。参数表是覆盖式修改的，
+            不存快照，事后再也说不清「这个金额当初是怎么来的」。
+            点<b>复现</b>会用存档里的快照重算一遍做校验，并给出「若改用当前参数会差多少、是哪个参数造成的」。
+          </p>
+        </div>
+        <button
+          class="shrink-0 rounded-lg border border-gray-200 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50"
+          :disabled="archiveLoading"
+          @click="loadArchives"
+        >
+          {{ archiveLoading ? '读取中…' : '刷新列表' }}
+        </button>
+      </div>
+
+      <div class="flex flex-wrap items-center gap-2">
+        <input
+          v-model="archiveName"
+          type="text"
+          maxlength="120"
+          placeholder="存档名称，例如：2026年10管理处全量-C1法"
+          class="w-72 rounded-lg border border-gray-200 px-3 py-1.5 text-sm focus:border-primary focus:outline-none"
+        >
+        <button
+          class="btn-primary !px-4 !py-1.5 !text-sm"
+          :disabled="savingArchive || !rows.length"
+          :title="rows.length ? '保存当前清单与当前参数快照' : '请先载入或录入清单'"
+          @click="saveArchive"
+        >
+          {{ savingArchive ? '保存中…' : '保存当前测算' }}
+        </button>
+        <span class="text-xs text-gray-400">
+          当前清单 {{ rows.length.toLocaleString('zh-CN') }} 行；保存时会用服务端重新计算金额（不采信页面上的数字）
+        </span>
+      </div>
+
+      <p v-if="!archiveLoading && !archives.length" class="mt-4 text-xs text-gray-400">
+        暂无存档。填个名称点「保存当前测算」，以后就能随时复现这次的口径。
+      </p>
+
+      <div v-else-if="archives.length" class="mt-4 table-scroll !max-h-[360px]">
+        <table class="w-full text-xs">
+          <thead class="bg-gray-50 text-left text-gray-500">
+            <tr>
+              <th class="px-2 py-1.5 font-medium">存档名称</th>
+              <th class="px-2 py-1.5 font-medium">引擎</th>
+              <th class="px-2 py-1.5 text-right font-medium">清单行数</th>
+              <th class="px-2 py-1.5 text-right font-medium">未匹配</th>
+              <th class="px-2 py-1.5 text-right font-medium">金额(元)</th>
+              <th class="px-2 py-1.5 font-medium">保存人</th>
+              <th class="px-2 py-1.5 font-medium">保存时间</th>
+              <th class="px-2 py-1.5 text-center font-medium">参数快照</th>
+              <th class="px-2 py-1.5 font-medium">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="a in archives" :key="a.id" class="border-b border-gray-50 hover:bg-gray-50/60">
+              <td class="px-2 py-1.5 text-gray-700">
+                <span class="text-gray-400">#{{ a.id }}</span>
+                <span class="ml-1 font-medium">{{ a.name }}</span>
+                <span v-if="a.siteLabel" class="block text-[11px] text-gray-400" :title="a.siteLabel">{{ a.siteLabel }}</span>
+              </td>
+              <td class="px-2 py-1.5 text-gray-600">{{ a.engineLabel }}</td>
+              <td class="px-2 py-1.5 text-right text-gray-600">{{ a.itemCount == null ? '—' : a.itemCount.toLocaleString('zh-CN') }}</td>
+              <td class="px-2 py-1.5 text-right" :class="a.unresolvedCount ? 'text-amber-600' : 'text-gray-400'">
+                {{ a.unresolvedCount == null ? '—' : a.unresolvedCount }}
+              </td>
+              <td class="px-2 py-1.5 text-right font-mono text-gray-800">{{ a.totalAmount == null ? '—' : fmt(a.totalAmount) }}</td>
+              <td class="px-2 py-1.5 text-gray-600">{{ a.operatorName || '—' }}</td>
+              <td class="whitespace-nowrap px-2 py-1.5 text-gray-500">{{ a.createdAt }}</td>
+              <td class="px-2 py-1.5 text-center">
+                <span :class="a.hasSnapshot ? 'text-emerald-600' : 'text-amber-600'">{{ a.hasSnapshot ? '有' : '无' }}</span>
+              </td>
+              <td class="whitespace-nowrap px-2 py-1.5">
+                <button class="text-primary hover:underline" @click="reproduceArchive(a.id)">复现</button>
+                <button class="ml-2 text-primary hover:underline" @click="loadArchive(a)">载入</button>
+                <button class="ml-2 text-primary hover:underline" :disabled="!a.hasSnapshot" @click="exportArchive(a)">导出</button>
+                <button class="ml-2 text-red-500 hover:underline" @click="deleteArchive(a)">删除</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
     <!-- ── 测算说明（可折叠）────────────────────────────────── -->
     <div v-if="showHelp" class="card mt-5 !p-6">
       <h2 class="mb-1 text-lg font-semibold text-gray-900">运维费用是怎么算出来的</h2>
@@ -1256,6 +1567,164 @@ onMounted(loadParams)
         <div class="flex items-center gap-3 border-t border-gray-100 px-6 py-4">
           <NuxtLink to="/admin/data" class="mr-auto text-xs text-primary hover:underline">去「数据维护 → 运维参数」改参数 →</NuxtLink>
           <button class="rounded-lg border border-gray-200 px-4 py-2 text-sm text-gray-600 hover:bg-gray-100" @click="showTrace = false">
+            关闭
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── 复现弹窗：能不能算回同一个数 / 今天再算会差多少 ────── -->
+    <div
+      v-if="showRepro"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+      @click.self="showRepro = false"
+    >
+      <div class="flex max-h-[86vh] w-full max-w-3xl flex-col rounded-xl bg-white shadow-xl">
+        <div class="flex items-start justify-between gap-4 border-b border-gray-100 px-6 py-4">
+          <div class="min-w-0">
+            <h3 class="text-lg font-semibold text-gray-900">存档复现</h3>
+            <p class="mt-0.5 truncate text-xs text-gray-500">
+              <template v-if="reproResult">#{{ reproResult.id }}《{{ reproResult.name }}》 · {{ reproResult.itemCount.toLocaleString('zh-CN') }} 行</template>
+              <template v-else>正在用存档中的参数快照重算…</template>
+            </p>
+          </div>
+          <button class="shrink-0 text-gray-400 hover:text-gray-600" @click="showRepro = false">✕</button>
+        </div>
+
+        <div class="min-h-0 flex-1 overflow-auto px-6 py-4">
+          <div v-if="reproLoading" class="py-12 text-center text-sm text-gray-400">正在读取快照并重算…</div>
+
+          <template v-else-if="reproResult">
+            <div
+              v-if="!reproResult.hasSnapshot"
+              class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-700"
+            >
+              这个存档没有参数快照（很可能是启用快照功能之前保存的），无法复现当时的口径。
+              它只记录了金额，无法回答「当时用的是哪套参数」。
+            </div>
+
+            <template v-else>
+              <!-- ① 能不能算回来 -->
+              <div
+                class="mb-4 rounded-lg border px-4 py-3 text-sm"
+                :class="reproResult.reproducible ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-red-200 bg-red-50 text-red-700'"
+              >
+                <b>{{ reproResult.reproducible ? '✓ 可复现：用存档参数重算，金额与存档完全一致' : '✗ 复现不一致，请核查' }}</b>
+                <div class="mt-1 text-xs leading-relaxed">
+                  存档金额 {{ fmt(reproResult.storedTotal) }} 元；快照重算
+                  {{ fmt(reproResult.snapshotTotal) }} 元。
+                  <template v-if="reproResult.snapshotItemDrift > 0">
+                    另有 {{ reproResult.snapshotItemDrift }} 行明细金额对不上（逐行误差 &gt; 0.01 元）。
+                  </template>
+                  <template v-else-if="reproResult.snapshotItemDrift < 0">
+                    存档明细未留存完整行数据，无法逐行比对（仅比对了总额）。
+                  </template>
+                  <template v-else>逐行明细也全部一致。</template>
+                </div>
+              </div>
+
+              <!-- ② 今天再算会差多少 -->
+              <h4 class="mb-2 text-sm font-semibold text-gray-800">若改用【当前参数】重算同一份清单</h4>
+              <div class="mb-4 overflow-hidden rounded-lg border border-gray-200">
+                <table class="w-full text-xs">
+                  <thead class="bg-gray-50 text-left text-gray-500">
+                    <tr>
+                      <th class="px-3 py-2 font-medium">口径</th>
+                      <th class="px-3 py-2 text-right font-medium">金额(元)</th>
+                      <th class="px-3 py-2 text-right font-medium">与存档差额</th>
+                      <th class="px-3 py-2 text-right font-medium">差额比例</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr class="border-t border-gray-100">
+                      <td class="px-3 py-2 text-gray-700">存档金额（当时的口径）</td>
+                      <td class="px-3 py-2 text-right font-mono text-gray-800">{{ fmt(reproResult.storedTotal) }}</td>
+                      <td class="px-3 py-2 text-right text-gray-400">—</td>
+                      <td class="px-3 py-2 text-right text-gray-400">—</td>
+                    </tr>
+                    <tr class="border-t border-gray-100 bg-gray-50/50">
+                      <td class="px-3 py-2 text-gray-700">用存档快照重算（校验）</td>
+                      <td class="px-3 py-2 text-right font-mono text-gray-800">{{ fmt(reproResult.snapshotTotal) }}</td>
+                      <td class="px-3 py-2 text-right font-mono" :class="Math.abs(reproResult.snapshotTotal - reproResult.storedTotal) < 0.01 ? 'text-emerald-600' : 'text-red-600'">
+                        {{ fmt(reproResult.snapshotTotal - reproResult.storedTotal) }}
+                      </td>
+                      <td class="px-3 py-2 text-right text-gray-400">—</td>
+                    </tr>
+                    <tr class="border-t border-gray-100">
+                      <td class="px-3 py-2 text-gray-700">用当前参数重算</td>
+                      <td class="px-3 py-2 text-right font-mono text-gray-800">{{ fmt(reproResult.currentTotal) }}</td>
+                      <td class="px-3 py-2 text-right font-mono" :class="Math.abs(reproResult.drift) < 0.01 ? 'text-gray-400' : 'text-amber-600'">
+                        {{ reproResult.drift > 0 ? '+' : '' }}{{ fmt(reproResult.drift) }}
+                      </td>
+                      <td class="px-3 py-2 text-right" :class="Math.abs(reproResult.drift) < 0.01 ? 'text-gray-400' : 'text-amber-600'">
+                        {{ reproResult.driftPct > 0 ? '+' : '' }}{{ reproResult.driftPct.toFixed(2) }}%
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <p v-if="reproResult.currentUnresolved > 0" class="mb-4 text-xs text-amber-600">
+                注意：用当前参数重算时有 {{ reproResult.currentUnresolved }} 行未匹配到取费参数（按 0 计），
+                也会拉低金额 —— 差额不一定全是费率变化造成的。
+              </p>
+
+              <!-- ③ 是哪个参数造成的 -->
+              <h4 class="mb-2 text-sm font-semibold text-gray-800">
+                存档参数 与 当前参数 的差异
+                <span class="ml-1 font-normal text-gray-400">
+                  （共 {{ reproResult.paramChanges.total }} 处<template v-if="reproResult.paramChanges.total > reproResult.paramChanges.items.length">，仅显示前 {{ reproResult.paramChanges.items.length }} 处</template>）
+                </span>
+              </h4>
+              <p v-if="!reproResult.paramChanges.total" class="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+                参数没有任何变化 —— 当前参数与存档时完全一致。
+              </p>
+              <div v-else class="table-scroll !max-h-[280px]">
+                <table class="w-full text-xs">
+                  <thead class="bg-gray-50 text-left text-gray-500">
+                    <tr>
+                      <th class="px-2 py-1.5 font-medium">参数表</th>
+                      <th class="px-2 py-1.5 font-medium">条目</th>
+                      <th class="px-2 py-1.5 font-medium">变动</th>
+                      <th class="px-2 py-1.5 font-medium">存档时</th>
+                      <th class="px-2 py-1.5 font-medium">当前</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(c, ci) in reproResult.paramChanges.items" :key="ci" class="border-b border-gray-50">
+                      <td class="px-2 py-1.5 text-gray-500">{{ c.tableLabel }}</td>
+                      <td class="px-2 py-1.5 text-gray-700">
+                        <span :title="c.key">{{ c.key.length > 30 ? c.key.slice(0, 30) + '…' : c.key }}</span>
+                      </td>
+                      <td class="px-2 py-1.5">
+                        <span v-if="c.type === 'changed'" class="text-gray-600">{{ c.label }}</span>
+                        <span v-else-if="c.type === 'added'" class="text-emerald-600">新增（当时没有）</span>
+                        <span v-else class="text-amber-600">停用/删除（当时参与计算）</span>
+                      </td>
+                      <td class="px-2 py-1.5 font-mono text-gray-500">
+                        {{ c.type === 'changed' ? (c.old === null ? '—' : c.old) : (c.type === 'removed' ? '参与计算' : '—') }}
+                      </td>
+                      <td class="px-2 py-1.5 font-mono text-gray-800">
+                        {{ c.type === 'changed' ? (c.new === null ? '—' : c.new) : (c.type === 'added' ? '参与计算' : '—') }}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <p class="mt-4 text-[11px] leading-relaxed text-gray-400">
+                快照里的参数表行数：{{ JSON.stringify(reproResult.snapshotCounts || {}) }}。
+                复现用的是存档时点那一整套参数（含被停用的项），与当前参数无关；
+                这条链路和页面上的「追溯」同源 —— 都由真正算钱的引擎现算，不另写一套。
+              </p>
+            </template>
+          </template>
+        </div>
+
+        <div class="flex items-center gap-3 border-t border-gray-100 px-6 py-4">
+          <NuxtLink to="/admin/logs" class="mr-auto text-xs text-primary hover:underline">
+            看参数是谁什么时候改的（审计日志）→
+          </NuxtLink>
+          <button class="rounded-lg border border-gray-200 px-4 py-2 text-sm text-gray-600 hover:bg-gray-100" @click="showRepro = false">
             关闭
           </button>
         </div>

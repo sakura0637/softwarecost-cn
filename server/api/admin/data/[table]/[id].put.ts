@@ -6,7 +6,7 @@ export default defineEventHandler(async (event) => {
   const params = (event as any).context.params
   assertTable(params.table)
   const body = await readBody(event)
-  const res = await updateRow(params.table, params.id, body)
+  const res = await updateRow(params.table, params.id, body, event)
   if (res.errors.length) throw createError({ statusCode: 400, statusMessage: res.errors.join('；') })
   return { changes: res.changes, ok: true }
 })

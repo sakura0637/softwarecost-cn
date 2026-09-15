@@ -1,6 +1,9 @@
 // 离线验证：用种子参数 + 示例清单跑一遍双引擎，与源表口径对数
 import { calcOm, quotaValueOf, lookupQuota, lookupC1, type OmParams, type OmItemInput } from '../server/utils/omCalculator'
 import { traceOmRow } from '../server/utils/omTrace'
+import { buildOmWorkbook } from '../server/utils/omExport'
+import { diffParams } from '../server/utils/omSnapshot'
+import * as XLSX from 'xlsx'
 import { matchDevice, matchC1Rule, matchQuotaItem, buildQuotaIndex,
   buildSiteTree, parseSiteSelection, buildSiteWhere, countSelectedRows,
 } from '../server/utils/omDeviceMatcher'
@@ -300,6 +303,68 @@ console.log(`  定额法 ${trQuota.formula}`)
 console.log(`  ${trQuota.substitution} 元`)
 console.log('')
 
+// ══ 导出 Excel ══
+// 导出必须与引擎同源，所以这里把工作簿生成后**再读回来**逐项核对（sheet 名 / 明细行数 /
+// 合计金额 / 页脚）。只生成不读回的测试等于没测 —— 文件没人打开过，就不知道里面到底有没有数。
+const expInfo = {
+  projectName: '自检导出样本',
+  sourceLabel: '示例清单',
+  siteLabel: '全选（示例）',
+  operatorName: 'self-test',
+  createdAt: new Date('2026-09-15T08:00:00Z'),
+  paramVersion: '自检参数快照',
+}
+const wbBack = XLSX.read(buildOmWorkbook(r1, params, expInfo), { type: 'buffer' })
+const aoaOf = (name: string) => XLSX.utils.sheet_to_json(wbBack.Sheets[name], { header: 1 }) as any[][]
+const sumAoa = aoaOf('费用汇总')
+const itemAoa = aoaOf('设备明细')
+const unresAoa = aoaOf('未匹配清单')
+const paramAoa = aoaOf('参数与出处')
+const rowOf = (aoa: any[][], first: string) => aoa.find((r) => String(r?.[0] ?? '') === first)
+const expTotal = Number(rowOf(sumAoa, '费用总额(元)')?.[3])
+const expSumRow = itemAoa[itemAoa.length - 3] || [] // 明细表：合计行在「空行 + 页脚」之前
+const expItemSum = Number(expSumRow[expSumRow.length - 3] ?? expSumRow[expSumRow.length - 4])
+const wbText = [sumAoa, itemAoa, unresAoa, paramAoa].flat(2).map((v) => String(v ?? '')).join('|')
+const quotaWb = XLSX.read(buildOmWorkbook(r2, params, expInfo), { type: 'buffer' })
+const quotaItemAoa = XLSX.utils.sheet_to_json(quotaWb.Sheets['设备明细'], { header: 1 }) as any[][]
+
+console.log('══ 导出 Excel ══')
+console.log(`  工作表：${wbBack.SheetNames.join(' / ')}`)
+console.log(`  费用总额 = ${expTotal.toFixed(2)} 元；明细合计 = ${expItemSum.toFixed(2)} 元`)
+console.log(`  页脚：${sumAoa[sumAoa.length - 1]?.[0]}`)
+console.log('')
+
+// ══ 快照复现（离线可验的部分）══
+// 存档把参数与清单塞进 JSONB、取出时再 JSON.parse —— 只要往返有精度损失，
+// 「复现」就会永远对不上，而这类偏差在页面上只表现为「差几毛钱」，极难归因。故单独锁住。
+const snapParams = JSON.parse(JSON.stringify(params)) as OmParams
+const snapItems = JSON.parse(JSON.stringify(items)) as OmItemInput[]
+const snapItemsQ = JSON.parse(JSON.stringify(itemsQ)) as OmItemInput[]
+const r1Snap = calcOm('c1', snapItems, snapParams)
+const r2Snap = calcOm('quota', snapItemsQ, snapParams)
+const snapDriftRows = r1.items.filter((x, i) => Math.abs(x.amount - r1Snap.items[i].amount) > 1e-9).length
+
+// 参数差异表：自比应无差异；改一个连乘因子应恰好报 1 处、且总额真的跟着变；
+// 删一个 C.1 类别应报「删除」。最后一组是重点 —— 差异表必须指向**真会影响金额**的参数，
+// 否则「告诉你哪个参数变了」就成了摆设。
+const dSelf = diffParams(params, params)
+const changedFactor = params.factors.find((f) => f.group_key === 'c1_workload' && f.calc === 'multiply')!
+const paramsF2: OmParams = {
+  ...params,
+  factors: params.factors.map((f) => (f === changedFactor ? { ...f, value: f.value + 0.1 } : f)),
+}
+const dOne = diffParams(params, paramsF2)
+const dOneTotal = calcOm('c1', items, paramsF2).total
+const droppedCat = params.c1.find((c) => c.category === r1.items[0].category_ref)?.category || params.c1[0].category
+const dDrop = diffParams(params, { ...params, c1: params.c1.filter((c) => c.category !== droppedCat) })
+
+console.log('══ 快照复现 ══')
+console.log(`  JSON 往返后：C.1 ${r1.total.toFixed(2)} → ${r1Snap.total.toFixed(2)} 元（逐行漂移 ${snapDriftRows} 行）`)
+console.log(`              定额法 ${r2.total.toFixed(2)} → ${r2Snap.total.toFixed(2)} 元`)
+console.log(`  参数自比差异 ${dSelf.total} 处；改一个连乘因子 → ${dOne.total} 处，总额变化 ${(dOneTotal - r1.total).toFixed(2)} 元`)
+console.log(`  停用 C.1 类别「${droppedCat}」→ ${dDrop.total} 处（类型 ${dDrop.changes[0]?.type}）`)
+console.log('')
+
 // ── 断言：引擎必须与源表口径一致（改错参数/公式会在这里红）──
 const indMgmt = r1.indirect.find((l) => l.label === '企业管理费')
 const rateC1 = omRateItems.filter((r) => r.engine === 'c1')
@@ -422,6 +487,50 @@ const checks: Array<[string, boolean, string]> = [
     String(trNoBill.steps.length)],
   ['追溯带出权威出处（C.1 基准与人工成本基数）',
     trC1.refs.length >= 2 && trC1.refs.some((r) => r.from === 'om_wage_base.source'), String(trC1.refs.length)],
+  // —— 导出 Excel（读回文件核对，不是只生成）——
+  ['导出含 4 个工作表（费用汇总/设备明细/未匹配清单/参数与出处）',
+    wbBack.SheetNames.join('|') === '费用汇总|设备明细|未匹配清单|参数与出处', wbBack.SheetNames.join(',')],
+  ['导出「费用总额」= 引擎总额（导出与测算同源）',
+    Math.abs(expTotal - r1.total) < 0.01, `${expTotal.toFixed(2)} vs ${r1.total.toFixed(2)}`],
+  ['导出明细合计 = 引擎明细之和（按原始精度，未逐行舍入）',
+    Math.abs(expItemSum - r1.items.reduce((a, x) => a + x.amount, 0)) < 0.01, expItemSum.toFixed(2)],
+  ['导出明细行数 = 清单行数（未丢行）',
+    itemAoa.length === r1.items.length + 4, // 表头 + 明细 + 合计 + 空行 + 页脚
+    `${itemAoa.length - 4} / ${r1.items.length}`],
+  ['导出页脚带导出人 / 时间 / 参数版本',
+    String(sumAoa[sumAoa.length - 1]?.[0] || '').includes('self-test') &&
+    String(sumAoa[sumAoa.length - 1]?.[0] || '').includes('2026-09-15') &&
+    String(sumAoa[sumAoa.length - 1]?.[0] || '').includes('自检参数快照'),
+    String(sumAoa[sumAoa.length - 1]?.[0] || '').slice(0, 60)],
+  ['导出「参数与出处」带全 5 类参数（基数/因子/费率/C.1基准/定额）',
+    ['一、人工成本基数', '二、调整因子', '三、费率项', '四、C.1 单位工作量基准', '五、定额单价库']
+      .every((k) => paramAoa.some((r) => String(r?.[0] || '').startsWith(k))),
+    paramAoa.filter((r) => /^[一二三四五六]、/.test(String(r?.[0] || ''))).length + ' 节'],
+  ['导出定额条目带中文「计算说明」而非变量式',
+    paramAoa.some((r) => String(r?.[5] || '').includes('运维单价调整系数')),
+    String(paramAoa.find((r) => String(r?.[0] || '') === '站点交换机')?.[5] || '').slice(0, 30)],
+  ['导出内容无 NaN / undefined 泄漏',
+    !/NaN|undefined|null/.test(wbText), wbText.match(/NaN|undefined|null/)?.[0] || ''],
+  ['定额法导出明细含「定额值 / 类别系数 / 点位数」列',
+    String(quotaItemAoa[0]?.join(',') || '').includes('定额值') &&
+    String(quotaItemAoa[0]?.join(',') || '').includes('类别系数') &&
+    String(quotaItemAoa[0]?.join(',') || '').includes('点位数'),
+    String(quotaItemAoa[0]?.join(',') || '')],
+  // —— 快照复现（存档存 JSONB、取出再算，必须一模一样）——
+  ['参数与清单经 JSON 往返后 C.1 总额不变',
+    Math.abs(r1Snap.total - r1.total) < 1e-6, `${r1Snap.total.toFixed(6)} vs ${r1.total.toFixed(6)}`],
+  ['参数与清单经 JSON 往返后逐行金额零漂移',
+    snapDriftRows === 0, `${snapDriftRows} 行`],
+  ['参数与清单经 JSON 往返后定额法总额不变',
+    Math.abs(r2Snap.total - r2.total) < 1e-6, `${r2Snap.total.toFixed(6)} vs ${r2.total.toFixed(6)}`],
+  ['参数自比无差异（差异表不会平白报「改过」）', dSelf.total === 0, String(dSelf.total)],
+  ['改动一个连乘因子 → 恰好报 1 处差异且带字段名',
+    dOne.total === 1 && dOne.changes[0]?.type === 'changed' && dOne.changes[0]?.field === 'value',
+    `${dOne.total} 处 / ${dOne.changes[0]?.field}`],
+  ['差异表指向的是真会影响金额的参数（改它总额确实变了）',
+    Math.abs(dOneTotal - r1.total) > 1, `差额 ${(dOneTotal - r1.total).toFixed(2)} 元`],
+  ['停用一个 C.1 类别 → 报「删除」（停用即不再参与计算）',
+    dDrop.total === 1 && dDrop.changes[0]?.type === 'removed', `${dDrop.total} 处 / ${dDrop.changes[0]?.type}`],
 ]
 
 console.log('══ 断言 ══')
