@@ -1,0 +1,438 @@
+// 运维费用测算引擎（双引擎）
+//
+// c1    —— C.1 工作量法
+//          依据 GB/T 28827.7-2022 附录 A 调整因子 +《2025年中国软件行业基准数据》附录 C.1 单位工作量
+//          合价 = 数量 × (单位工作量 × 工作量因子) × (人天单价 × 价格因子)
+//          （对应源表《参照国标进行测算（结合配套实际）.xlsx》各站点 sheet 的 K 列公式）
+//
+// quota —— 定额单价法
+//          依据 2008 年行业维护定额（工资涨幅 3.47822 已内含于定额值）
+//          年运维费 = 数量 × 定额值(元/月) × 12 × 类别系数(硬件/软件)
+//          （对应源表《设备台账__数据对齐版v2_0913.xlsx》的运维费合价列）
+//
+// ⚠️ 本文件刻意不写死任何常数：全部系数、费率、基准值都从
+//    om_wage_base / om_factors / om_rate_items / om_c1_benchmarks / om_quota_items /
+//    om_station_types 六张表读取，后台改完即生效。
+//    lookup 用的「名称」都是后台可见、可改的中文名，改名前请同步此处常量。
+
+import db from './db'
+
+export type OmEngine = 'c1' | 'quota'
+
+export interface OmWageRow {
+  id: number; year: number | null; region: string | null; industry: string | null
+  monthly_wage: number; work_days: number; is_default: boolean
+  source: string | null; note: string | null
+}
+export interface OmFactorRow {
+  id: number; group_key: string; group_name: string | null; engine: string
+  name: string; value: number; unit: string; calc: string
+  description: string | null; basis: string | null; seq: number
+}
+export interface OmRateRow {
+  id: number; group_key: string; group_name: string | null; name: string
+  rate: number; unit: string; base_note: string | null; description: string | null; seq: number
+}
+export interface OmC1Row {
+  id: number; category: string; level: string | null; unit: string
+  workload: number; source: string | null; note: string | null; seq: number
+}
+export interface OmQuotaRow {
+  id: number; name: string; unit: string; quota: number; kind: string
+  source: string | null; note: string | null; seq: number
+}
+export interface OmStationRow {
+  id: number; code: string; name: string; unit: string; qty: number
+  time_factor: number; sheet_name: string | null; sort: number
+}
+
+export interface OmParams {
+  wageBases: OmWageRow[]
+  wage: OmWageRow | undefined
+  /** 人天单价 = 月均工资 ÷ 月计薪天数 */
+  dailyRate: number
+  factors: OmFactorRow[]
+  rates: OmRateRow[]
+  c1: OmC1Row[]
+  quota: OmQuotaRow[]
+  stations: OmStationRow[]
+}
+
+export interface OmItemInput {
+  name: string
+  station?: string
+  category?: string
+  sheet_no?: number | null
+  unit?: string
+  qty: number
+  /** c1 引擎：C.1 设备类别（对应 om_c1_benchmarks.category） */
+  category_ref?: string
+  /** c1 引擎：单位工作量覆盖值（留空则按 category_ref 查基准） */
+  workload?: number | null
+  /** quota 引擎：定额条目名（对应 om_quota_items.name） */
+  quota_ref?: string
+  /** quota 引擎：定额值覆盖值 */
+  quota_value?: number | null
+  /** quota 引擎：硬件 / 软件 */
+  kind?: string
+  /** 明确不计费（线缆/机柜/家具等）：金额按 0 计，且不算「未匹配」 */
+  billable?: boolean
+  note?: string
+}
+
+export interface OmItemResult extends OmItemInput {
+  /** 实际采用的单位工作量（c1） */
+  usedWorkload: number
+  /** 实际采用的定额值（quota） */
+  usedQuota: number
+  /** 修正工作量 = 单位工作量 × 工作量因子（c1） */
+  correctedWorkload: number
+  /** 修正单价 = 人天单价 × 价格因子（c1） */
+  correctedPrice: number
+  /** 类别系数（quota） */
+  kindCoef: number
+  stationTimeFactor: number
+  amount: number
+  resolved: boolean
+  warn?: string
+}
+
+export interface OmCostLine {
+  key: string
+  label: string
+  /** 计费基数说明 */
+  base: string
+  rate: number
+  unit: string
+  amount: number
+}
+
+export interface OmResult {
+  engine: OmEngine
+  items: OmItemResult[]
+  /** 人工费（c1）/ 直接运维费（quota）—— 明细合价之和 */
+  laborCost: number
+  /** 明细合计的人天（c1 才有意义；quota 引擎按定额倒推不来，返回 0） */
+  totalPersonDays: number
+  otherDirect: OmCostLine[]
+  otherDirectTotal: number
+  /** 运行维护管理服务费（源表附表5，= 直接费小计 × 费率；未启用时为 null） */
+  mgmtService: OmCostLine | null
+  /** 直接费小计（人工费 + 其他直接费，未含管理服务费） */
+  directSubtotal: number
+  directTotal: number
+  indirect: OmCostLine[]
+  indirectTotal: number
+  pretax: number
+  tax: OmCostLine | null
+  spare: OmCostLine | null
+  total: number
+  meta: {
+    wageBaseLabel: string
+    dailyRate: number
+    workloadFactor: number
+    /** 服务周期 × 服务频率 × 生存周期（不含人员配备、不含站点服务时间） */
+    basePriceFactor: number
+    /** 人员配备系数（等级加权） */
+    staffCoef: number
+    /** 生效价格因子 = 人员配备系数 × basePriceFactor（站点行再乘各站服务时间系数） */
+    priceFactor: number
+    hardCoef: number
+    softCoef: number
+    monthFactor: number
+    engineLabel: string
+  }
+}
+
+// ── 参数装载 ──────────────────────────────────────────────────
+export async function loadOmParams(wageBaseId?: number | null): Promise<OmParams> {
+  const wageBases = (await db
+    .prepare('SELECT * FROM om_wage_base ORDER BY is_default DESC, id')
+    .all()) as OmWageRow[]
+  const factors = (await db
+    .prepare('SELECT * FROM om_factors WHERE is_active = true ORDER BY group_key, seq, id')
+    .all()) as OmFactorRow[]
+  const rates = (await db
+    .prepare('SELECT * FROM om_rate_items WHERE is_active = true ORDER BY group_key, seq, id')
+    .all()) as OmRateRow[]
+  const c1 = (await db
+    .prepare('SELECT * FROM om_c1_benchmarks WHERE is_active = true ORDER BY seq, id')
+    .all()) as OmC1Row[]
+  const quota = (await db
+    .prepare('SELECT * FROM om_quota_items WHERE is_active = true ORDER BY seq, id')
+    .all()) as OmQuotaRow[]
+  const stations = (await db
+    .prepare('SELECT * FROM om_station_types WHERE is_active = true ORDER BY sort, id')
+    .all()) as OmStationRow[]
+
+  const wage =
+    (wageBaseId != null ? wageBases.find((w) => Number(w.id) === Number(wageBaseId)) : undefined) ||
+    wageBases.find((w) => w.is_default) ||
+    wageBases[0]
+  const days = wage ? Number(wage.work_days) || 21.75 : 21.75
+  const dailyRate = wage ? Number(wage.monthly_wage) / days : 0
+
+  return { wageBases, wage, dailyRate, factors, rates, c1, quota, stations }
+}
+
+function factorValue(p: OmParams, groupKey: string, name: string, def = 1): number {
+  const f = p.factors.find((x) => x.group_key === groupKey && x.name === name)
+  return f ? Number(f.value) : def
+}
+
+/** 组内所有 calc='multiply' 的因子连乘（'option' / 'product' / 'weighted' 一律排除） */
+function groupProduct(p: OmParams, groupKey: string): number {
+  return p.factors
+    .filter((f) => f.group_key === groupKey && (f.calc === 'multiply' || !f.calc))
+    .reduce((a, f) => a * Number(f.value), 1)
+}
+
+function normName(s: string | null | undefined): string {
+  return String(s == null ? '' : s)
+    .replace(/[\s（）()·・,，、]/g, '')
+    .toLowerCase()
+}
+
+/** 模糊查 C.1 基准：先精确、再去掉「借」前缀、再归一化包含匹配 */
+export function lookupC1(c1: OmC1Row[], ref?: string | null): number | null {
+  if (!ref) return null
+  const raw = String(ref).trim()
+  if (!raw) return null
+  const hit = c1.find((x) => x.category === raw)
+  if (hit) return Number(hit.workload)
+  const stripped = raw.replace(/^借/, '')
+  const hit2 = c1.find((x) => x.category === stripped)
+  if (hit2) return Number(hit2.workload)
+  const n = normName(stripped)
+  const hit3 =
+    c1.find((x) => normName(x.category).replace(/^借/, '') === n) ||
+    c1.find((x) => normName(x.category).replace(/^借/, '').includes(n)) ||
+    c1.find((x) => n.includes(normName(x.category).replace(/^借/, '')))
+  return hit3 ? Number(hit3.workload) : null
+}
+
+/** 模糊查定额：先精确，再归一化包含匹配 */
+export function lookupQuota(quota: OmQuotaRow[], ref?: string | null): OmQuotaRow | null {
+  if (!ref) return null
+  const raw = String(ref).trim()
+  if (!raw) return null
+  const hit = quota.find((x) => x.name === raw)
+  if (hit) return hit
+  const n = normName(raw)
+  return (
+    quota.find((x) => normName(x.name) === n) ||
+    quota.find((x) => n.length >= 4 && normName(x.name).includes(n)) ||
+    quota.find((x) => normName(x.name).length >= 4 && n.includes(normName(x.name))) ||
+    null
+  )
+}
+
+function findStation(stations: OmStationRow[], it: OmItemInput): OmStationRow | undefined {
+  const key = it.station || it.station_code
+  if (!key) return undefined
+  // 站点名三种写法都要认：显示名 / 编码 / 源测算书的工作表名
+  // （示例清单来自源表，「管理处」实际对应站点类型「管理处监控中心」）
+  return stations.find((s) => s.name === key || s.code === key || s.sheet_name === key)
+}
+
+// ── 费率基数解析（由后台「计费基数」文字决定，可改）────────────────
+interface TailCtx {
+  labor: number
+  direct: number
+  pretax: number
+  personDays: number
+}
+
+function resolveBase(baseNote: string | null | undefined, ctx: TailCtx): { label: string; value: number } {
+  const s = String(baseNote || '')
+  if (s.includes('税前')) return { label: '税前造价', value: ctx.pretax }
+  if (s.includes('直接费')) return { label: '直接费', value: ctx.direct }
+  if (s.includes('人天') || s.includes('天')) return { label: '人天', value: ctx.personDays }
+  return { label: '人工费', value: ctx.labor }
+}
+
+function sumGroup(p: OmParams, groupKey: string, ctx: TailCtx, skipYuan = false): OmCostLine[] {
+  return p.rates
+    .filter((r) => r.group_key === groupKey)
+    .map((r) => {
+      const isYuan = r.unit === 'yuan'
+      if (isYuan && skipYuan) return null
+      const base = isYuan ? { label: '人天', value: ctx.personDays } : resolveBase(r.base_note, ctx)
+      return {
+        key: `${groupKey}:${r.id}`,
+        label: r.name,
+        base: base.label,
+        rate: Number(r.rate),
+        unit: r.unit,
+        amount: Number(r.rate) * base.value,
+      } as OmCostLine
+    })
+    .filter((x): x is OmCostLine => !!x)
+}
+
+export interface OmCalcOptions {
+  /**
+   * 运行维护管理服务费率（源表附表5）。传 null/0 表示不叠加。
+   * 取值来自 om_rate_items 的 mgmt_service 组，默认 0.10。
+   */
+  mgmtServiceRate?: number | null
+}
+
+// ── 主计算 ────────────────────────────────────────────────────
+export function calcOm(
+  engine: OmEngine,
+  items: OmItemInput[],
+  p: OmParams,
+  opts: OmCalcOptions = {}
+): OmResult {
+  const workloadFactor = groupProduct(p, 'c1_workload')
+  const basePriceFactor = groupProduct(p, 'c1_price')
+  const staffCoef = factorValue(p, 'c1_staff', '人员配备系数（加权）', 1)
+  const hardCoef = factorValue(p, 'quota_global', '硬件取费调整系数', 1)
+  const softCoef = factorValue(p, 'quota_global', '软件取费调整系数', 1)
+  const monthFactor = factorValue(p, 'quota_global', '年·月换算系数', 12)
+  const dailyRate = p.dailyRate
+
+  const results: OmItemResult[] = []
+  let laborCost = 0
+  let totalPersonDays = 0
+
+  for (const it of items) {
+    const qty = Number(it.qty) || 0
+    const st = findStation(p.stations, it)
+    const stationTimeFactor = st ? Number(st.time_factor) || 1 : 1
+
+    // 明确不计费的行（结构件/线缆/机柜/家具等）：金额为 0，不当成「未匹配」报错
+    if (it.billable === false) {
+      results.push({
+        ...it, usedWorkload: 0, usedQuota: 0, correctedWorkload: 0, correctedPrice: 0,
+        kindCoef: 0, stationTimeFactor, amount: 0, resolved: true,
+      })
+      continue
+    }
+
+    if (engine === 'c1') {
+      let used: number
+      let resolved = true
+      let warn: string | undefined
+      if (it.workload != null && it.workload !== ('' as any)) {
+        used = Number(it.workload) || 0
+      } else {
+        const v = lookupC1(p.c1, it.category_ref)
+        if (v == null) {
+          used = 0
+          resolved = false
+          warn = `未匹配到 C.1 类别「${it.category_ref || '（未填）'}」，本行按 0 计`
+        } else used = v
+      }
+      // 价格因子 = 人员配备系数 × (服务周期 × 服务频率 × 生存周期) × 站点服务时间系数
+      const priceFactor = staffCoef * basePriceFactor * stationTimeFactor
+      const correctedWorkload = used * workloadFactor
+      const correctedPrice = dailyRate * priceFactor
+      const amount = qty * correctedWorkload * correctedPrice
+      laborCost += amount
+      totalPersonDays += qty * correctedWorkload
+      results.push({
+        ...it, usedWorkload: used, usedQuota: 0, correctedWorkload, correctedPrice,
+        kindCoef: 0, stationTimeFactor, amount, resolved, warn,
+      })
+    } else {
+      let qRow: OmQuotaRow | null = null
+      let used: number
+      let resolved = true
+      let warn: string | undefined
+      if (it.quota_value != null && it.quota_value !== ('' as any)) {
+        used = Number(it.quota_value) || 0
+        qRow = lookupQuota(p.quota, it.quota_ref)
+      } else {
+        qRow = lookupQuota(p.quota, it.quota_ref)
+        if (!qRow) {
+          used = 0
+          resolved = false
+          warn = `未匹配到定额条目「${it.quota_ref || '（未填）'}」，本行按 0 计`
+        } else used = Number(qRow.quota)
+      }
+      const kind = it.kind || qRow?.kind || '硬件'
+      const kindCoef = kind === '软件' ? softCoef : hardCoef
+      const amount = qty * used * monthFactor * kindCoef
+      laborCost += amount
+      results.push({
+        ...it, usedWorkload: 0, usedQuota: used, correctedWorkload: 0, correctedPrice: 0,
+        kindCoef, stationTimeFactor, amount, resolved, warn,
+      })
+    }
+  }
+
+  // 其他直接费：规费 / 直接非人力成本 / 措施项目费（基数按后台「计费基数」文字判定）
+  const ctx: TailCtx = { labor: laborCost, direct: 0, pretax: 0, personDays: totalPersonDays }
+  const otherDirect = [
+    ...sumGroup(p, 'regulation', ctx),
+    ...sumGroup(p, 'nonlabor', ctx),
+    ...sumGroup(p, 'measure', ctx),
+  ]
+  const otherDirectTotal = otherDirect.reduce((a, l) => a + l.amount, 0)
+  const directSubtotal = laborCost + otherDirectTotal
+
+  // 运行维护管理服务费（源表附表5）：以「直接费小计」为基数
+  const mgmtRate = Number(opts.mgmtServiceRate || 0)
+  const mgmtService: OmCostLine | null =
+    mgmtRate > 0
+      ? {
+          key: 'mgmt_service',
+          label: '运行维护管理服务费',
+          base: '直接费小计',
+          rate: mgmtRate,
+          unit: 'ratio',
+          amount: directSubtotal * mgmtRate,
+        }
+      : null
+  const directTotal = directSubtotal + (mgmtService?.amount || 0)
+
+  ctx.direct = directTotal
+  const indirect = sumGroup(p, 'overhead', ctx).concat(sumGroup(p, 'profit', ctx))
+  const indirectTotal = indirect.reduce((a, l) => a + l.amount, 0)
+  const pretax = directTotal + indirectTotal
+
+  ctx.pretax = pretax
+  const taxLines = sumGroup(p, 'tax', ctx)
+  const tax = taxLines[0] || null
+  const spareLines = sumGroup(p, 'spare', ctx)
+  const spare = spareLines[0] || null
+
+  const total = pretax + (tax?.amount || 0) + (spare?.amount || 0)
+
+  const ENGINE_LABEL: Record<OmEngine, string> = { c1: 'C.1 工作量法', quota: '定额单价法' }
+  const wageLabel = p.wage
+    ? `${p.wage.year || ''}年 ${p.wage.region || ''} ${p.wage.industry || ''} ${Number(p.wage.monthly_wage).toFixed(2)} 元/月 ÷ ${p.wage.work_days} 天`
+    : '（未配置人工成本基数）'
+
+  return {
+    engine,
+    items: results,
+    laborCost,
+    totalPersonDays,
+    otherDirect,
+    otherDirectTotal,
+    mgmtService,
+    directSubtotal,
+    directTotal,
+    indirect,
+    indirectTotal,
+    pretax,
+    tax,
+    spare,
+    total,
+    meta: {
+      wageBaseLabel: wageLabel,
+      dailyRate,
+      workloadFactor,
+      basePriceFactor,
+      staffCoef,
+      priceFactor: staffCoef * basePriceFactor,
+      hardCoef,
+      softCoef,
+      monthFactor,
+      engineLabel: ENGINE_LABEL[engine],
+    },
+  }
+}

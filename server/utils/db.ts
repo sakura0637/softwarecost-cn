@@ -9,6 +9,10 @@ import { standards } from '../../composables/useStandards'
 import { estimationBenchmarks, provincialPricing, standardRealParams } from '../seed/estimationData'
 // 城市费率时序 + 参数字典（从全部省标/国标原文精确抽取，驱动 /city、/parameters 页）
 import { cityRates, estimationParameters } from '../seed/parameterData'
+import {
+  OM_SEED_VERSION, omWageBases, omFactors, omRateItems,
+  omC1Benchmarks, omQuotaItems, omStationTypes,
+} from '../seed/omData'
 // RBAC 权限目录：外置配置，新增模块/按钮只需改此文件，db.ts 自动注册
 import { PERMISSION_MODULES, ACTION_NAMES, DEFAULT_ROLES, USER_PERMISSION_PATTERNS, matchesPermissionPattern } from '../config/permissions'
 
@@ -463,6 +467,139 @@ CREATE TABLE IF NOT EXISTS estimation_parameters (
 CREATE INDEX IF NOT EXISTS idx_ep_std   ON estimation_parameters(standard_id);
 CREATE INDEX IF NOT EXISTS idx_ep_cat   ON estimation_parameters(param_category);
 
+-- ── 运维费用测算参数库（2026-09-15）────────────────────────────────────
+-- 双引擎：c1 = C.1工作量法（GB/T 28827.7-2022 附录A 因子 +《中国软件行业基准数据》附录C.1）
+--         quota = 定额单价法（2008 年行业维护定额 × 工资涨幅 × 类别系数）
+-- 设计原则：公式里的每一个数值（系数 / 费率 / 基准 / 定额）都落库、都可在
+--          【数据维护】后台增删改；测算引擎只读这些表，不写死任何常数。
+CREATE TABLE IF NOT EXISTS om_wage_base (
+  id            SERIAL PRIMARY KEY,
+  year          INTEGER,
+  region        VARCHAR(64),
+  industry      VARCHAR(128),
+  monthly_wage  DOUBLE PRECISION NOT NULL DEFAULT 0,   -- 月均工资(元)
+  work_days     DOUBLE PRECISION NOT NULL DEFAULT 21.75, -- 月计薪天数
+  is_default    BOOLEAN NOT NULL DEFAULT false,        -- 测算页默认选中的基数
+  source        TEXT,
+  note          TEXT,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS om_factors (
+  id           SERIAL PRIMARY KEY,
+  group_key    VARCHAR(64) NOT NULL,                  -- c1_workload / c1_price / c1_staff / quota_level ...
+  group_name   VARCHAR(128),
+  engine       VARCHAR(16) NOT NULL DEFAULT 'c1',     -- c1 / quota / common
+  name         VARCHAR(128) NOT NULL,
+  value        DOUBLE PRECISION NOT NULL DEFAULT 1,
+  unit         VARCHAR(16) NOT NULL DEFAULT 'ratio',  -- ratio 系数 / coef 等级系数 / yuan 元 / person_day 人天
+  calc         VARCHAR(16) NOT NULL DEFAULT 'multiply', -- multiply 连乘 / product 合计 / weighted 加权
+  description  TEXT,
+  basis        TEXT,                                  -- 取值依据（国标条款 / 源表位置）
+  seq          INTEGER NOT NULL DEFAULT 0,
+  is_active    BOOLEAN NOT NULL DEFAULT true,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_omf_group ON om_factors(engine, group_key);
+
+CREATE TABLE IF NOT EXISTS om_rate_items (
+  id           SERIAL PRIMARY KEY,
+  group_key    VARCHAR(64) NOT NULL,                  -- regulation / nonlabor / measure / overhead / profit / tax / spare / mgmt_service
+  group_name   VARCHAR(128),
+  name         VARCHAR(128) NOT NULL,
+  rate         DOUBLE PRECISION NOT NULL DEFAULT 0,
+  unit         VARCHAR(16) NOT NULL DEFAULT 'ratio',  -- ratio 费率 / yuan 金额
+  base_note    TEXT,                                  -- 计费基数说明
+  description  TEXT,
+  seq          INTEGER NOT NULL DEFAULT 0,
+  is_active    BOOLEAN NOT NULL DEFAULT true,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_omr_group ON om_rate_items(group_key);
+
+CREATE TABLE IF NOT EXISTS om_c1_benchmarks (
+  id         SERIAL PRIMARY KEY,
+  category   VARCHAR(255) NOT NULL,                   -- C.1 设备类别（如 PC服务器 / 交换机）
+  level      VARCHAR(32),                             -- 级别（一~五级，可空）
+  unit       VARCHAR(32) NOT NULL DEFAULT '台·套·年',
+  workload   DOUBLE PRECISION NOT NULL DEFAULT 0,     -- 单位工作量 人天/台·套·年
+  source     TEXT,
+  note       TEXT,
+  seq        INTEGER NOT NULL DEFAULT 0,
+  is_active  BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_omc1_cat ON om_c1_benchmarks(category);
+
+CREATE TABLE IF NOT EXISTS om_quota_items (
+  id         SERIAL PRIMARY KEY,
+  name       VARCHAR(255) NOT NULL,
+  unit       VARCHAR(32) NOT NULL DEFAULT '元',
+  quota      DOUBLE PRECISION NOT NULL DEFAULT 0,     -- 定额值（元/月）
+  kind       VARCHAR(16) NOT NULL DEFAULT '硬件',      -- 硬件 / 软件（决定取费调整系数）
+  source     TEXT,
+  note       TEXT,
+  seq        INTEGER NOT NULL DEFAULT 0,
+  is_active  BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_omq_name ON om_quota_items(name);
+
+CREATE TABLE IF NOT EXISTS om_station_types (
+  id          SERIAL PRIMARY KEY,
+  code        VARCHAR(64) NOT NULL UNIQUE,
+  name        VARCHAR(128) NOT NULL,
+  unit        VARCHAR(16) NOT NULL DEFAULT '个',
+  qty         INTEGER NOT NULL DEFAULT 0,
+  time_factor DOUBLE PRECISION NOT NULL DEFAULT 1.0,  -- 服务时间系数（总调中心 7×24 = 1.5）
+  sheet_name  VARCHAR(64),                            -- 源测算书对应工作表
+  sort        INTEGER NOT NULL DEFAULT 0,
+  is_active   BOOLEAN NOT NULL DEFAULT true,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- 测算项目与明细（引擎计算结果的落地快照；明细行保存「引用 + 现值」，
+-- 便于参数调整后重算，也便于留痕对比）
+CREATE TABLE IF NOT EXISTS om_projects (
+  id           SERIAL PRIMARY KEY,
+  user_id      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  name         VARCHAR(255) NOT NULL,
+  engine       VARCHAR(16) NOT NULL DEFAULT 'c1',     -- c1 / quota
+  year         INTEGER,
+  wage_base_id INTEGER,
+  remark       TEXT,
+  result_json  TEXT,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS om_project_items (
+  id           SERIAL PRIMARY KEY,
+  project_id   INTEGER NOT NULL REFERENCES om_projects(id) ON DELETE CASCADE,
+  station_code VARCHAR(64),
+  category     VARCHAR(255),
+  seq          VARCHAR(32),
+  name         VARCHAR(255) NOT NULL,
+  unit         VARCHAR(32),
+  qty          DOUBLE PRECISION NOT NULL DEFAULT 0,
+  category_ref VARCHAR(255),                          -- C.1 设备类别（c1 引擎用）
+  workload     DOUBLE PRECISION,                      -- 单位工作量快照
+  quota_ref    VARCHAR(255),                          -- 定额条目名（quota 引擎用）
+  quota_value  DOUBLE PRECISION,                      -- 定额值快照
+  unit_price   DOUBLE PRECISION,
+  amount       DOUBLE PRECISION,
+  note         TEXT,
+  sort         INTEGER NOT NULL DEFAULT 0,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_ompi_project ON om_project_items(project_id);
+
 CREATE TABLE IF NOT EXISTS kv (
   k TEXT PRIMARY KEY,
   v TEXT
@@ -642,6 +779,66 @@ CREATE TABLE IF NOT EXISTS kv (
     console.log(`[seed] estimation_parameters 已灌 ${estimationParameters.length} 条`)
   }
 
+
+  // 5) 运维费用测算参数库（双引擎参数 / 基准 / 定额 / 站点）
+  //    只在「表为空」时灌入种子，之后一切改动以数据库为准 ——
+  //    这几张表就是公式里所有数值的存放地，后台可随时增删改，绝不能被启动流程覆盖。
+  {
+    const omSeeded = (await pool.query("SELECT v FROM kv WHERE k = 'om_seed_version'")).rows[0]?.v
+    const omProbe = Number((await pool.query('SELECT COUNT(*)::int AS c FROM om_c1_benchmarks')).rows[0].c)
+    if (omProbe === 0) {
+      for (const w of omWageBases) {
+        await pool.query(
+          `INSERT INTO om_wage_base (year, region, industry, monthly_wage, work_days, is_default, source, note)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+          [w.year, w.region, w.industry, w.monthly_wage, w.work_days, w.is_default, w.source, w.note]
+        )
+      }
+      for (const f of omFactors) {
+        await pool.query(
+          `INSERT INTO om_factors (group_key, group_name, engine, name, value, unit, calc, description, basis, seq)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+          [f.group_key, f.group_name, f.engine, f.name, f.value, f.unit, f.calc, f.description, f.basis, f.seq]
+        )
+      }
+      for (const r of omRateItems) {
+        await pool.query(
+          `INSERT INTO om_rate_items (group_key, group_name, name, rate, unit, base_note, description, seq)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+          [r.group_key, r.group_name, r.name, r.rate, r.unit, r.base_note, r.description, r.seq]
+        )
+      }
+      for (const c of omC1Benchmarks) {
+        await pool.query(
+          `INSERT INTO om_c1_benchmarks (category, level, unit, workload, source, note, seq)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+          [c.category, c.level, c.unit, c.workload, c.source, c.note, c.seq]
+        )
+      }
+      for (const q of omQuotaItems) {
+        await pool.query(
+          `INSERT INTO om_quota_items (name, unit, quota, kind, source, note, seq)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+          [q.name, q.unit, q.quota, q.kind, q.source, q.note, q.seq]
+        )
+      }
+      for (const s of omStationTypes) {
+        await pool.query(
+          `INSERT INTO om_station_types (code, name, unit, qty, time_factor, sheet_name, sort)
+           VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (code) DO NOTHING`,
+          [s.code, s.name, s.unit, s.qty, s.time_factor, s.sheet_name, s.sort]
+        )
+      }
+      console.log(`[seed] 运维测算参数库已灌：工资基数${omWageBases.length} 因子${omFactors.length} 费率${omRateItems.length} C1基准${omC1Benchmarks.length} 定额${omQuotaItems.length} 站点${omStationTypes.length}`)
+    }
+    if (omSeeded !== OM_SEED_VERSION) {
+      await pool.query(
+        `INSERT INTO kv (k, v) VALUES ('om_seed_version', $1)
+         ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v`,
+        [OM_SEED_VERSION]
+      )
+    }
+  }
 
   // 6) 初始管理员（环境变量驱动，幂等）
   const initUser = process.env.INIT_ADMIN_USERNAME

@@ -22,7 +22,18 @@ export const DATA_CATEGORIES = [
   { key: 'standards', label: '造价标准' },
   { key: 'pricing', label: '地区费率' },
   { key: 'benchmarks', label: '行业基准' },
+  { key: 'om', label: '运维参数' },
 ]
+
+// ── 运维费用测算：公式里所有数值的存放地（2026-09-15）────────────────────
+// 测算引擎（server/utils/omCalculator.ts）只读这 6 张表，代码里不写死任何常数：
+//   om_wage_base      人天单价 = 月均工资 ÷ 月计薪天数
+//   om_factors        调整因子（工作量 / 价格 / 人员配备 / 定额法各级系数）
+//   om_rate_items     规费 · 直接非人力成本 · 措施费 · 间接费 · 利润 · 税金 · 备品备件 · 管理服务费
+//   om_c1_benchmarks  C.1 单位工作量基准（设备类别 → 人天/台·套·年）
+//   om_quota_items    定额单价库（设备 → 元/月）
+//   om_station_types  站点类型（默认数量 + 服务时间系数）
+// 改这里等于改公式，改完在测算页「重算」即生效。
 
 export const DATA_TABLES: DataTableConf[] = [
   // ── 造价标准 ──
@@ -97,6 +108,64 @@ export const DATA_TABLES: DataTableConf[] = [
     readonly: ['created_at'],
     json: ['values'],
     fk: { standard_id: { table: 'standards', label: 'name' } },
+  },
+  // ── 运维参数（双引擎测算的全部输入）──
+  {
+    key: 'om_wage_base',
+    label: '人工成本基数',
+    category: 'om',
+    pk: 'id',
+    pkAuto: true,
+    readonly: ['created_at', 'updated_at'],
+  },
+  {
+    key: 'om_factors',
+    label: '调整因子',
+    category: 'om',
+    pk: 'id',
+    pkAuto: true,
+    readonly: ['created_at', 'updated_at'],
+  },
+  {
+    key: 'om_rate_items',
+    label: '费率项',
+    category: 'om',
+    pk: 'id',
+    pkAuto: true,
+    readonly: ['created_at', 'updated_at'],
+  },
+  {
+    key: 'om_c1_benchmarks',
+    label: 'C.1 单位工作量基准',
+    category: 'om',
+    pk: 'id',
+    pkAuto: true,
+    readonly: ['created_at', 'updated_at'],
+  },
+  {
+    key: 'om_quota_items',
+    label: '定额单价库',
+    category: 'om',
+    pk: 'id',
+    pkAuto: true,
+    readonly: ['created_at', 'updated_at'],
+  },
+  {
+    key: 'om_station_types',
+    label: '站点类型',
+    category: 'om',
+    pk: 'id',
+    pkAuto: true,
+    readonly: ['created_at', 'updated_at'],
+  },
+  {
+    key: 'om_projects',
+    label: '运维测算项目',
+    category: 'om',
+    pk: 'id',
+    pkAuto: true,
+    readonly: ['created_at', 'updated_at', 'result_json'],
+    fk: { wage_base_id: { table: 'om_wage_base', label: 'industry' } },
   },
 ]
 
@@ -195,6 +264,107 @@ export const DATA_LABELS: Record<string, string> = {
   'estimation_parameters.description': '说明',
   'estimation_parameters.seq': '排序',
   'estimation_parameters.is_active': '启用',
+
+  // ── 运维参数 ──
+  'om_wage_base.id': '编号',
+  'om_wage_base.year': '年度',
+  'om_wage_base.region': '地区',
+  'om_wage_base.industry': '行业',
+  'om_wage_base.monthly_wage': '月均工资(元)',
+  'om_wage_base.work_days': '月计薪天数',
+  'om_wage_base.is_default': '默认基数',
+  'om_wage_base.source': '来源',
+  'om_wage_base.note': '说明',
+  'om_wage_base.created_at': '创建时间',
+  'om_wage_base.updated_at': '更新时间',
+
+  'om_factors.id': '编号',
+  'om_factors.group_key': '因子分组',
+  'om_factors.group_name': '分组名称',
+  'om_factors.engine': '适用引擎',
+  'om_factors.name': '因子名称',
+  'om_factors.value': '取值',
+  'om_factors.unit': '取值类型',
+  'om_factors.calc': '计算方式',
+  'om_factors.description': '描述',
+  'om_factors.basis': '取值依据',
+  'om_factors.seq': '排序',
+  'om_factors.is_active': '启用',
+  'om_factors.created_at': '创建时间',
+  'om_factors.updated_at': '更新时间',
+
+  'om_rate_items.id': '编号',
+  'om_rate_items.group_key': '分组',
+  'om_rate_items.group_name': '分组名称',
+  'om_rate_items.name': '费用名称',
+  'om_rate_items.rate': '费率/金额',
+  'om_rate_items.unit': '取值类型',
+  'om_rate_items.base_note': '计费基数',
+  'om_rate_items.description': '说明',
+  'om_rate_items.seq': '排序',
+  'om_rate_items.is_active': '启用',
+  'om_rate_items.created_at': '创建时间',
+  'om_rate_items.updated_at': '更新时间',
+
+  'om_c1_benchmarks.id': '编号',
+  'om_c1_benchmarks.category': '设备类别',
+  'om_c1_benchmarks.level': '级别',
+  'om_c1_benchmarks.unit': '单位',
+  'om_c1_benchmarks.workload': '单位工作量(人天/台·套·年)',
+  'om_c1_benchmarks.source': '来源',
+  'om_c1_benchmarks.note': '说明',
+  'om_c1_benchmarks.seq': '排序',
+  'om_c1_benchmarks.is_active': '启用',
+  'om_c1_benchmarks.created_at': '创建时间',
+  'om_c1_benchmarks.updated_at': '更新时间',
+
+  'om_quota_items.id': '编号',
+  'om_quota_items.name': '设备名称',
+  'om_quota_items.unit': '单位',
+  'om_quota_items.quota': '定额值(元/月)',
+  'om_quota_items.kind': '类别',
+  'om_quota_items.source': '来源',
+  'om_quota_items.note': '说明',
+  'om_quota_items.seq': '排序',
+  'om_quota_items.is_active': '启用',
+  'om_quota_items.created_at': '创建时间',
+  'om_quota_items.updated_at': '更新时间',
+
+  'om_station_types.id': '编号',
+  'om_station_types.code': '站点编码',
+  'om_station_types.name': '站点名称',
+  'om_station_types.unit': '单位',
+  'om_station_types.qty': '数量',
+  'om_station_types.time_factor': '服务时间系数',
+  'om_station_types.sheet_name': '源表工作表',
+  'om_station_types.sort': '排序',
+  'om_station_types.is_active': '启用',
+  'om_station_types.created_at': '创建时间',
+  'om_station_types.updated_at': '更新时间',
+
+  'om_projects.id': '编号',
+  'om_projects.name': '项目名称',
+  'om_projects.engine': '测算引擎',
+  'om_projects.year': '年度',
+  'om_projects.wage_base_id': '人工成本基数',
+  'om_projects.remark': '备注',
+  'om_projects.result_json': '计算结果',
+  'om_projects.created_at': '创建时间',
+  'om_projects.updated_at': '更新时间',
+}
+
+// 枚举列的可读取值（数据维护页把存库的英文/编码渲染成中文下拉）
+export const DATA_ENUMS: Record<string, Record<string, string>> = {
+  'om_factors.engine': { c1: 'C.1 工作量法', quota: '定额单价法', common: '两法通用' },
+  'om_factors.unit': { ratio: '系数', coef: '等级系数', yuan: '金额(元)', person_day: '人天' },
+  'om_factors.calc': { multiply: '连乘', product: '分组合计', weighted: '加权平均', sum: '求和' },
+  'om_rate_items.unit': { ratio: '费率', yuan: '金额(元)' },
+  'om_quota_items.kind': { 硬件: '硬件', 软件: '软件' },
+  'om_projects.engine': { c1: 'C.1 工作量法', quota: '定额单价法' },
+}
+
+export function enumFor(table: string, col: string): Record<string, string> | undefined {
+  return DATA_ENUMS[`${table}.${col}`]
 }
 
 export function labelFor(table: string, col: string): string {

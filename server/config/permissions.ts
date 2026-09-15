@@ -30,6 +30,8 @@ export const PERMISSION_MODULES: PermissionModule[] = [
     routes: ['/api/projects'] },
   { key: 'data', name: '数据维护', actions: ['view', 'create', 'edit', 'delete'],
     routes: ['/api/admin/data'] },
+  { key: 'om', name: '运维费用测算', actions: ['view', 'create', 'edit', 'delete'],
+    routes: ['/api/om'] },
   { key: 'admin-users', name: '用户管理', actions: ['view', 'create', 'edit', 'delete'],
     routes: ['/api/admin/users'] },
   { key: 'admin-roles', name: '角色管理', actions: ['view', 'create', 'edit', 'delete'],
@@ -61,6 +63,7 @@ export const USER_PERMISSION_PATTERNS = [
   'city:*',
   'parameters:*',
   'projects:*',
+  'om:*',
 ]
 
 // 简单通配匹配（code 如 'standards:view'，pattern 如 'standards:*' 或 'standards:view'）
@@ -129,6 +132,8 @@ export const ROUTE_PERMISSION_RULES: Array<{ method: string; pattern: string; co
   { method: 'POST', pattern: '/api/projects/:id/upload', code: 'projects:edit' },
   { method: 'POST', pattern: '/api/projects/:id/analyze', code: 'projects:view', note: '只读计算' },
   { method: 'POST', pattern: '/api/projects/:id/calculate', code: 'projects:view', note: '只读计算' },
+  // —— 运维测算：计算/取参数/取示例清单都是只读，不产生数据
+  { method: 'POST', pattern: '/api/om/calculate', code: 'om:view', note: '只读计算' },
 ]
 
 /** HTTP 方法 → 动作 的默认映射（模块前缀匹配后套用） */
