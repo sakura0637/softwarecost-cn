@@ -509,7 +509,8 @@ CREATE TABLE IF NOT EXISTS om_factors (
   name         VARCHAR(128) NOT NULL,
   value        DOUBLE PRECISION NOT NULL DEFAULT 1,
   unit         VARCHAR(16) NOT NULL DEFAULT 'ratio',  -- ratio 系数 / coef 等级系数 / yuan 元 / person_day 人天
-  calc         VARCHAR(16) NOT NULL DEFAULT 'multiply', -- ⚠️ 只有 multiply 会真的进公式（omCalculator 只认它）；option 备选(不参与) / product 分组合计 / weighted 加权平均（后两者仅展示）
+  calc         VARCHAR(16) NOT NULL DEFAULT 'multiply', -- ⚠️ 本行在组内的角色，不是「多大」：multiply 进本组连乘 / weight_item 加权项 / named 按名取用 / option 备选(引擎不读) / listed 源表已列未进公式 / product 分组合计（现算，只读）/ weighted 加权结果（现算，只读）
+  weight       DOUBLE PRECISION NOT NULL DEFAULT 1,   -- 仅在 calc='weight_item' 时有意义：该等级在加权平均里的权重
   description  TEXT,
   basis        TEXT,                                  -- 取值依据（国标条款 / 源表位置）
   seq          INTEGER NOT NULL DEFAULT 0,
@@ -518,6 +519,8 @@ CREATE TABLE IF NOT EXISTS om_factors (
   updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_omf_group ON om_factors(engine, group_key);
+-- 老库补列（幂等；新库已在 CREATE TABLE 里带上）。缺了它 repairOmSeed() 会 UPDATE 不存在的列 → 全站 500。
+ALTER TABLE om_factors ADD COLUMN IF NOT EXISTS weight DOUBLE PRECISION NOT NULL DEFAULT 1;
 
 CREATE TABLE IF NOT EXISTS om_rate_items (
   id           SERIAL PRIMARY KEY,
@@ -961,6 +964,9 @@ CREATE TABLE IF NOT EXISTS kv (
  *      分开标注后引擎各取所需，也便于在后台对比。
  *   6. 新增 om_device_c1_map（设备价格库 → 运维取费映射）并补插种子规则 ——
  *      让运维测算能直接吃「设备价格库」的真实设备。已有规则不更新，只补缺失条目。
+ *   7. om_factors 修正「计算方式」口径 + 补 weight 列（2026-09-16，v5）——
+ *      原先 calc 只有 4 个取值且被直译成「是否参与计算」，导致 22 行标注与实际行为相反
+ *      （详见下方因子表段落的注释）。本次把角色补齐为 7 类，并让人员配备系数由权重现算。
  */
 async function repairOmSeed(): Promise<void> {
   let nQuota = 0
@@ -1027,7 +1033,63 @@ async function repairOmSeed(): Promise<void> {
     nMapIns++
   }
 
-  console.log(`[repair] 运维参数库已修订：定额类别/公式 ${nQuota} 条、费率 ${nRate} 条（新增 ${nRateIns} 条）、工资基数 ${nWage} 条、设备取费映射新增 ${nMapIns} 条`)
+  // 因子表《计算方式》口径修正（2026-09-16，v5）：
+  // 这一步只改「本行在组内担任什么角色」与「权重」，**数值一律不动**（后台可能已经调过 1.2 / 1.8）。
+  // 修正的三类错误标注：
+  //   · 人员配备 5 个等级行  multiply → weight_item —— 引擎从未连乘过它们，改等级金额纹丝不动；
+  //   · 定额法 5 行        multiply/option → named —— 引擎按名称定位，恰是真正在算钱的乘数；
+  //   · 运维级别/能力/业务特征 13 行 multiply → listed —— 源表列出但未纳入公式。
+  // product / weighted 是系统计算行，跳过（它们的值交给下面的重算回填）。
+  let nFactor = 0
+  for (const f of omFactors) {
+    if (f.calc === 'product' || f.calc === 'weighted') continue
+    const r = await pool.query(
+      `UPDATE om_factors
+          SET group_name = $1, engine = $2, unit = $3, calc = $4, weight = $5,
+              description = $6, basis = $7, seq = $8, updated_at = now()
+        WHERE group_key = $9 AND name = $10
+          AND (group_name IS DISTINCT FROM $1 OR engine IS DISTINCT FROM $2 OR unit IS DISTINCT FROM $3
+               OR calc IS DISTINCT FROM $4 OR weight IS DISTINCT FROM $5
+               OR description IS DISTINCT FROM $6 OR basis IS DISTINCT FROM $7 OR seq IS DISTINCT FROM $8)`,
+      [f.group_name, f.engine, f.unit, f.calc, f.weight ?? 1, f.description, f.basis, f.seq, f.group_key, f.name]
+    )
+    nFactor += r.rowCount || 0
+  }
+  const nComputed = await recomputeComputedFactors()
+
+  console.log(`[repair] 运维参数库已修订：定额类别/公式 ${nQuota} 条、费率 ${nRate} 条（新增 ${nRateIns} 条）、工资基数 ${nWage} 条、设备取费映射新增 ${nMapIns} 条、因子口径 ${nFactor} 条（系统计算行回填 ${nComputed} 条）`)
+}
+
+/**
+ * 回填 om_factors 里「系统计算行」的存量值，让「库里存的」与「引擎现算的」严格一致。
+ *   product  → 组内 calc='multiply' 连乘（如工作量调整因子合计 2.16）
+ *   weighted → 组内 calc='weight_item' 按 weight 加权平均（如人员配备系数 0.905）
+ * 口径与 omCalculator 的 groupProduct / weightedGroupValue 完全一致（那边现算，这边回填）。
+ * 这两类行在后台是只读的，回填不会覆盖任何人手填的数据 —— 它们本来就该由公式决定。
+ */
+async function recomputeComputedFactors(): Promise<number> {
+  const all = (await pool.query('SELECT * FROM om_factors WHERE is_active = true')).rows as any[]
+  let n = 0
+  for (const row of all) {
+    if (row.calc !== 'product' && row.calc !== 'weighted') continue
+    const members = all.filter((x) => x.group_key === row.group_key && Number(x.id) !== Number(row.id))
+    let v: number | null = null
+    if (row.calc === 'product') {
+      const ms = members.filter((x) => x.calc === 'multiply')
+      if (ms.length) v = ms.reduce((a, x) => a * Number(x.value), 1)
+    } else {
+      const ms = members.filter((x) => x.calc === 'weight_item')
+      const wSum = ms.reduce((a, x) => a + Number(x.weight), 0)
+      if (ms.length && wSum > 0) v = ms.reduce((a, x) => a + Number(x.value) * Number(x.weight), 0) / wSum
+    }
+    if (v == null || !Number.isFinite(v)) continue
+    const r = await pool.query(
+      'UPDATE om_factors SET value = $1, updated_at = now() WHERE id = $2 AND value IS DISTINCT FROM $1',
+      [v, row.id]
+    )
+    n += r.rowCount || 0
+  }
+  return n
 }
 
 export default db

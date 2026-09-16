@@ -74,7 +74,9 @@ const DIFF_SPEC: Array<{
     table: 'om_factors', tableLabel: '调整因子',
     pick: (p) => p.factors,
     key: (r) => `${r.group_key}|${r.name}`,
-    fields: [['value', '取值'], ['calc', '计算方式'], ['engine', '适用引擎']],
+    // weight 必须进来：人员配备系数是「等级系数 × 权重」现算的，
+    // 只盯 value 会漏掉「权重被改」这种同样会改变金额的改动。
+    fields: [['value', '取值'], ['weight', '权重'], ['calc', '计算方式'], ['engine', '适用引擎']],
   },
   {
     // ⚠️ loadOmParams 已按 is_active 过滤：停用一条费率项在差异里表现为「删除」，

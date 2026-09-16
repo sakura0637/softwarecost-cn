@@ -3,11 +3,13 @@ import { ref, computed, reactive, onMounted } from 'vue'
 import { useAuth } from '~/composables/useAuth'
 // 枚举列的中文映射（如 om_factors.engine 的 c1 → C.1 工作量法），纯静态配置
 import { enumFor } from '~/server/config/dataTables'
+// 分组接线声明（每个分组到底怎么进公式）与行级「计算方式」的中文含义 —— 与后端同一份，纯静态配置
+import { rowGroupsFor, GROUP_ROLE_LABELS, GROUP_ROLE_TONE, isComputedCalc, columnNote } from '~/server/config/rowGroups'
 
 const { can, api, token } = useAuth()
 
 interface ColMeta { name: string; label: string; uiType: string; nullable: boolean; readonly: boolean; hidden: boolean; isPk: boolean; pkAuto: boolean; isFk: boolean; fkTable?: string; fkLabel?: string }
-interface TableConf { key: string; label: string; category: string; hint?: string }
+interface TableConf { key: string; label: string; category: string; hint?: string; groupBy?: string }
 interface Category { key: string; label: string }
 
 const categories = ref<Category[]>([])
@@ -116,6 +118,57 @@ const editableColumns = computed(() => columns.value.filter((c) => !c.readonly))
 const visibleColumns = computed(() => columns.value.filter((c) => !c.hidden))
 /** 当前表的说明（告诉管理员这张表怎么看、怎么填） */
 const activeHint = computed(() => tables.value.find((t) => t.key === activeTable.value)?.hint || '')
+
+// ── 分组渲染（有 groupBy 的表，如「调整因子」按因子分组分层）──
+// 为什么要分组：这张表里混着三种性质完全不同的行 —— 真正参与计算的参数、
+// 备查的备选项、以及由公式现算出来的结果行。以前它们平铺在一起、长得一模一样，
+// 结果「改哪一行会让金额变」全靠人记。分组表头把「本组怎么进公式」写在明处。
+const activeGroupBy = computed(() => tables.value.find((t) => t.key === activeTable.value)?.groupBy || '')
+const groupConf = computed(() => (activeGroupBy.value ? rowGroupsFor(activeTable.value) : null))
+/** 分组声明缺失时按「未登记分组」红字提示 —— 后台新增了引擎不认识的分组会立刻显形 */
+function declOf(key: string) {
+  return groupConf.value?.items?.[key] || null
+}
+function roleLabelOf(key: string): string {
+  const d = declOf(key)
+  return d ? GROUP_ROLE_LABELS[d.role] : '未登记分组（引擎不认，等于白填）'
+}
+function roleToneOf(key: string): string {
+  const tone = declOf(key) ? GROUP_ROLE_TONE[declOf(key)!.role] : 'danger'
+  return {
+    info: 'border-blue-200 bg-blue-50 text-blue-700',
+    warn: 'border-amber-200 bg-amber-50 text-amber-800',
+    muted: 'border-gray-200 bg-gray-100 text-gray-500',
+    danger: 'border-red-200 bg-red-50 text-red-600',
+  }[tone]
+}
+/** 系统计算行（分组合计 / 加权结果）：值由引擎现算，不可编辑、不可删除 */
+function isComputedRow(row: any): boolean {
+  return isComputedCalc(row?.calc)
+}
+/** 系统计算行与已停用行都做视觉降级，避免误当成可调参数 */
+function rowMuted(row: any): boolean {
+  return isComputedRow(row) || row?.is_active === false
+}
+
+type RenderItem = { type: 'group'; key: string } | { type: 'row'; row: any }
+/** 渲染序列：有分组就先插一条分组表头，再铺该组的成员行（保持原顺序） */
+const renderList = computed<RenderItem[]>(() => {
+  const col = activeGroupBy.value
+  if (!col) return rows.value.map((row) => ({ type: 'row' as const, row }))
+  const out: RenderItem[] = []
+  const seen = new Map<string, RenderItem>()
+  for (const row of rows.value) {
+    const k = String(row[col] ?? '')
+    if (!seen.has(k)) {
+      const item: RenderItem = { type: 'group', key: k }
+      seen.set(k, item)
+      out.push(item)
+    }
+    out.push({ type: 'row', row })
+  }
+  return out
+})
 const formTitle = computed(() => {
   const t = tables.value.find((x) => x.key === activeTable.value)?.label || ''
   return (formMode.value === 'add' ? '新增' : '编辑') + ' · ' + t
@@ -292,22 +345,53 @@ onMounted(loadMeta)
                 </tr>
               </thead>
               <tbody>
-                <!-- 数据行 -->
-                <tr v-for="row in rows" :key="row[primaryKey]" class="border-t border-gray-100 bg-white hover:bg-gray-50">
-                  <td v-for="c in visibleColumns" :key="c.name" class="px-3 py-2 align-top">
-                    <span v-if="c.isFk" class="block max-w-[180px] truncate" :title="fkLabel(c.name, row[c.name])">{{ fkLabel(c.name, row[c.name]) }}</span>
-                    <span
-                      v-else-if="c.uiType === 'json'"
-                      class="block max-w-[110px] truncate rounded bg-gray-50 px-1.5 py-0.5 text-center text-xs text-gray-500"
-                      title="查看和修改配置明细请点「编辑」"
-                    >{{ displayVal(c, row[c.name]) }}</span>
-                    <span v-else class="block max-w-[240px] truncate" :title="displayVal(c, row[c.name])">{{ displayVal(c, row[c.name]) }}</span>
-                  </td>
-                  <td v-if="can('data:edit') || can('data:delete')" class="sticky right-0 bg-inherit px-3 py-2 whitespace-nowrap">
-                    <button v-if="can('data:edit')" class="text-xs text-blue-500 hover:underline" @click="openEdit(row)">编辑</button>
-                    <button v-if="can('data:delete')" class="ml-2 text-xs text-red-500 hover:underline" @click="removeRow(row)">删除</button>
-                  </td>
-                </tr>
+                <!-- 数据行（有 groupBy 的表会在每组前插一条分组表头，写明本组到底算不算钱） -->
+                <template v-for="(it, i) in renderList" :key="it.type === 'row' ? it.row[primaryKey] : 'g-' + it.key + '-' + i">
+                  <tr v-if="it.type === 'group'" class="border-t-2 border-gray-200 bg-gray-100/70">
+                    <td :colspan="visibleColumns.length + 1" class="px-3 py-2">
+                      <div class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                        <span class="text-[13px] font-semibold text-gray-800">{{ declOf(it.key)?.name || it.key }}</span>
+                        <code class="text-[11px] text-gray-400">{{ it.key }}</code>
+                        <span class="rounded-full border px-2 py-0.5 text-[11px]" :class="roleToneOf(it.key)">{{ roleLabelOf(it.key) }}</span>
+                        <span v-if="declOf(it.key)?.note" class="w-full text-[11px] leading-relaxed text-gray-500">{{ declOf(it.key)?.note }}</span>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr v-else class="border-t border-gray-100" :class="rowMuted(it.row) ? 'bg-gray-50/70 text-gray-500' : 'bg-white hover:bg-gray-50'">
+                    <td v-for="c in visibleColumns" :key="c.name" class="px-3 py-2 align-top">
+                      <span v-if="c.isFk" class="block max-w-[180px] truncate" :title="fkLabel(c.name, it.row[c.name])">{{ fkLabel(c.name, it.row[c.name]) }}</span>
+                      <span
+                        v-else-if="c.uiType === 'json'"
+                        class="block max-w-[110px] truncate rounded bg-gray-50 px-1.5 py-0.5 text-center text-xs text-gray-500"
+                        title="查看和修改配置明细请点「编辑」"
+                      >{{ displayVal(c, it.row[c.name]) }}</span>
+                      <span
+                        v-else-if="c.name === 'calc' && isComputedRow(it.row)"
+                        class="rounded border border-gray-200 bg-gray-100 px-1.5 py-0.5 text-xs text-gray-500"
+                      >{{ displayVal(c, it.row[c.name]) }}</span>
+                      <span v-else class="flex items-center gap-1">
+                        <span
+                          class="block max-w-[220px] truncate"
+                          :class="columnNote(activeTable, it.row, c.name) ? 'text-gray-400' : ''"
+                          :title="columnNote(activeTable, it.row, c.name)?.note || displayVal(c, it.row[c.name])"
+                        >{{ displayVal(c, it.row[c.name]) }}</span>
+                        <span
+                          v-if="columnNote(activeTable, it.row, c.name)"
+                          class="shrink-0 rounded border border-gray-200 bg-gray-100 px-1 text-[10px] text-gray-500"
+                          :title="columnNote(activeTable, it.row, c.name)?.note"
+                        >{{ columnNote(activeTable, it.row, c.name)?.badge }}</span>
+                      </span>
+                    </td>
+                    <td v-if="can('data:edit') || can('data:delete')" class="sticky right-0 bg-inherit px-3 py-2 whitespace-nowrap">
+                      <span v-if="isComputedRow(it.row)" class="text-xs text-gray-400" title="取值由同组成员行推导、引擎现算；要改结果请改成员行">由公式决定</span>
+                      <template v-else>
+                        <button v-if="can('data:edit')" class="text-xs text-blue-500 hover:underline" @click="openEdit(it.row)">编辑</button>
+                        <button v-if="can('data:delete')" class="ml-2 text-xs text-red-500 hover:underline" @click="removeRow(it.row)">删除</button>
+                        <span v-if="it.row.is_active === false" class="ml-2 rounded border border-gray-200 bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-500">已停用</span>
+                      </template>
+                    </td>
+                  </tr>
+                </template>
 
                 <!-- 空数据提示 -->
                 <tr v-if="!rows.length">

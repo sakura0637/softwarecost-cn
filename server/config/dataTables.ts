@@ -4,7 +4,10 @@
 //   readonly 只读（自动管理或遗留列，不出现在编辑表单）
 //   json     存为 TEXT 的 JSON 列（前端用文本域，导入时校验 parse）
 //   fk       外键列 → 引用表与显示列（前端渲染下拉）
+//   groupBy  按该列分组渲染（分组表头 + 角色徽标，见 config/rowGroups.ts）
 // 注意：本文件是纯静态数据 + 类型，无任何 server-only 依赖，前后端均可 import。
+
+import { CALC_LABELS } from './rowGroups'
 
 export interface DataTableConf {
   key: string // 物理表名
@@ -18,6 +21,7 @@ export interface DataTableConf {
   json?: string[] // JSON 文本列
   fk?: Record<string, { table: string; label: string }> // 外键列 → 引用表 + 显示列
   overwriteCascade?: string[] // 覆盖导入时先清空这些从表（被本表外键依赖的表）
+  groupBy?: string // 按此列做分组渲染；分组角色声明见 config/rowGroups.ts
 }
 
 export const DATA_CATEGORIES = [
@@ -169,16 +173,18 @@ export const DATA_TABLES: DataTableConf[] = [
     // 列表不展示（group_name 已有中文），但**不能设只读** —— 它是 NOT NULL 无默认值，
     // 只读会让「新增」插入失败。改为配中文枚举，编辑时用下拉选，杜绝手写英文出错。
     hidden: ['group_key'],
-    hint: `两法的全部调整系数，每一分钱的乘数都在这张表里。
-【「计算方式」列是关键，不能一律当连乘】
-· 连乘 = 参与本组连乘，只有这一种会真的进公式；
-· 备选 = 备查项，不自动进公式（如「服务时间·总调中心 1.5」是给指挥调度中心单独取用的备选值）；
-· 分组合计 = 该组连乘的结果行，仅作展示与核对；
-· 加权平均 = 按权重加权的结果行（如人员配备系数 0.905），仅作展示。
-把「备选」误改成「连乘」会凭空多乘一个系数，这是最容易出错的地方。
+    groupBy: 'group_key', // 按分组渲染：表头显示组名 + 本组怎么进公式（见 config/rowGroups.ts）
+    hint: `两法的全部调整系数，每一分钱的乘数都在这张表里。列表按「因子分组」分层显示，表头写明这一组到底算不算钱。
+【先看分组表头，再看行】
+· 进本组连乘 → 真正参与计算，改一处金额就变；
+· 进本组加权平均 → 组内等级系数按「权重」列加权出结果行（人员配备系数 0.905 就是这么来的）；
+· 按名取用 → 引擎按名称找这几行，名称就是接口，改名或删除会让测算当场中止（这是有意的：宁可不给数，也不给错数）；
+· 备选 / 未纳入公式 → 引擎不读，改了金额不会变。运维级别要求、运维能力要求、运维系统及业务特征这三组属于「源表列了但没进公式」，仅供对照源表。
+【「计算方式」列只说明本行在组内干什么】它不代表数值大小，也不代表重要性。
+【系统计算行】分组合计与加权结果由引擎现算，界面上灰显、不可编辑 —— 要改结果，请改它上面那些成员行。
+【权重列】只有加权项（人员配备 1~5 等级）会用到，合计应为 1；改等级系数或权重，人员配备系数自动更新。
 【数字从哪来】GB/T 28827.7-2022 附录 A 参数表，或源表《调整因子（采纳)》页（见「取值依据」列）。
-【分组】工作量调整因子（失效率 1.2 × 离散 1.8 × 复杂 1.0 = 2.16）、价格调整因子（0.8 × 1.0 × 1.4）、人员配备等级、定额法的运维级别要求 / 系统业务特征 / 全局系数。
-【「因子分组」是怎么回事】它是引擎的取数键（代码里按它找组），列表不展示；编辑时是中文下拉，照着选即可。不要另建新分组 —— 引擎不认识的分组会被静默忽略，等于白填。`,
+【「因子分组」是怎么回事】它是引擎的取数键，不在行里显示（已提升到分组表头）；编辑时是中文下拉。不要另建新分组 —— 引擎不认识的分组会被静默忽略，等于白填。`,
   },
   {
     key: 'om_rate_items',
@@ -186,8 +192,9 @@ export const DATA_TABLES: DataTableConf[] = [
     category: 'om',
     pk: 'id',
     pkAuto: true,
-    // 同 om_factors：group_key 列表不展示，但必须可编辑（NOT NULL 无默认值），配中文枚举
+    // 同 om_factors：group_key 列表不展示（已提升到分组表头），但必须可编辑（NOT NULL 无默认值）
     hidden: ['group_key'],
+    groupBy: 'group_key',
     hint: `两法的规费 / 税费 / 管理费等取费项，决定「按什么基数收多少」。
 【「计费基数」列最要紧】它用文字告诉引擎这一项乘在谁身上，共 7 种，填错会让费率乘错对象：
 · 人工费 → 乘人工费（社保 25.7%、公积金 12%、意外险 1% 等规费）；
@@ -414,6 +421,7 @@ export const DATA_LABELS: Record<string, string> = {
   'om_factors.value': '取值',
   'om_factors.unit': '取值类型',
   'om_factors.calc': '计算方式',
+  'om_factors.weight': '权重',
   'om_factors.description': '描述',
   'om_factors.basis': '取值依据',
   'om_factors.seq': '排序',
@@ -546,14 +554,9 @@ export const DATA_ENUMS: Record<string, Record<string, string>> = {
   // 运维参数
   'om_factors.engine': { c1: 'C.1 工作量法', quota: '定额单价法', common: '两法通用' },
   'om_factors.unit': { ratio: '系数', coef: '等级系数', yuan: '金额(元)', person_day: '人天' },
-  // ⚠️ 只有「连乘」会真的进公式（omCalculator 里只认 calc==='multiply'），
-  //    其余三种都是展示/备查，故标签里直接写明，避免误选导致「改了没反应」。
-  'om_factors.calc': {
-    multiply: '连乘（参与计算）',
-    option: '备选（不参与连乘）',
-    product: '分组合计（仅展示）',
-    weighted: '加权平均（仅展示）',
-  },
+  // 描述**本行在组内干什么**，不是「数值大小」。
+  // 中文名与 config/rowGroups.ts 的 CALC_LABELS 同源（Excel 导出也用那一份），别在这里另写一遍。
+  'om_factors.calc': CALC_LABELS,
   'om_rate_items.unit': { ratio: '费率', yuan: '金额(元)' },
   'om_rate_items.engine': { c1: 'C.1 工作量法', quota: '定额单价法', both: '两法通用' },
   // 分组键：列表里不展示（旁边有中文分组名），但编辑弹窗要用中文下拉选，

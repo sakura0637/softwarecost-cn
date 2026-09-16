@@ -29,6 +29,8 @@ export interface OmWageRow {
 export interface OmFactorRow {
   id: number; group_key: string; group_name: string | null; engine: string
   name: string; value: number; unit: string; calc: string
+  /** 加权项（calc='weight_item'）在加权平均里的权重；其余行恒为 1 */
+  weight?: number
   description: string | null; basis: string | null; seq: number
 }
 export interface OmRateRow {
@@ -203,16 +205,25 @@ export async function loadOmParams(wageBaseId?: number | null): Promise<OmParams
   // 定额法有自己的工资锚点（源表定额!D3 = 136833/12 = 11402.75，与 C.1 法的 11436.9167 不同）
   const quotaWage = wageBases.find((w) => w.usage === 'quota') || wage
 
-  // 定额推导式变量表：全部取自后台可维护的参数，改参数 → 定额值联动
-  const fv = (name: string, def: number) => {
+  // 定额推导式变量表：全部取自后台可维护的参数，改参数 → 定额值联动。
+  // 这几个变量是「按名取用」的，**名称就是接口** —— 找不到必须报错，不能静默回退默认值，
+  // 否则后台改个名就会让全区几千条定额值悄悄变形（且没有任何提示）。
+  const named = (name: string): number => {
     const f = factors.find((x) => x.group_key === 'quota_global' && x.name === name)
-    return f ? Number(f.value) : def
+    if (!f) {
+      throw new Error(
+        `[运维测算] 参数缺失：定额法全局系数里没有名为「${name}」的因子。` +
+        `该行按名称取用（后台标注「按名取用·勿改名」），改名或删除会让定额值失真，故直接中止。` +
+        `请到「数据维护 → 运维参数 → 调整因子 → 定额法全局系数」恢复该名称。`
+      )
+    }
+    return Number(f.value)
   }
   const quotaVars: Record<string, number> = {
     month_wage: quotaWage ? Number(quotaWage.monthly_wage) : 0,
-    fp_coef: fv('功能点调整系数', 0.1),
-    wage_ratio: fv('运维单价调整系数', 1),
-    months: fv('年·月换算系数', 12),
+    fp_coef: named('功能点调整系数'),
+    wage_ratio: named('运维单价调整系数'),
+    months: named('年·月换算系数'),
   }
 
   return { wageBases, wage, dailyRate, quotaWage, factors, rates, c1, quota, stations, quotaVars }
@@ -279,16 +290,47 @@ export function quotaValueOf(q: OmQuotaRow, vars: Record<string, number>): numbe
   return Number(q.quota)
 }
 
-function factorValue(p: OmParams, groupKey: string, name: string, def = 1): number {
+/**
+ * 按名取用因子（calc='named'）：引擎不按 calc 走，而是按 group_key + name 精确定位。
+ *
+ * ⚠️ 找不到时**必须报错**，不能回退默认值。2026-09-16 之前这里默认 1 / 12：
+ * 只要有人在后台把「硬件取费调整系数」改个名（或删掉那一行），定额法就静默少乘 1.917 倍，
+ * 金额悄悄错掉近一半而界面上一切正常、毫无提示 —— 这是最危险的一类 bug。
+ * 现在改成当场中止并说明去哪里改回来：宁可让测算失败，也不给一个错的数。
+ */
+function requireNamedFactor(p: OmParams, groupKey: string, name: string): number {
   const f = p.factors.find((x) => x.group_key === groupKey && x.name === name)
-  return f ? Number(f.value) : def
+  if (!f) {
+    throw new Error(
+      `[运维测算] 参数缺失：${groupKey} 组里没有名为「${name}」的因子。` +
+      `该行是引擎按名称取用的（后台「计算方式」列标注为「按名取用·勿改名」），` +
+      `改名或删除会让测算结果失真，故直接中止。` +
+      `请到「数据维护 → 运维参数 → 调整因子」把名称恢复成「${name}」。`
+    )
+  }
+  return Number(f.value)
 }
 
-/** 组内所有 calc='multiply' 的因子连乘（'option' / 'product' / 'weighted' 一律排除） */
+/** 组内所有 calc='multiply' 的因子连乘
+ *  （'weight_item' 加权项 / 'named' 按名取用 / 'option' 备选 / 'listed' 源表已列未进公式 / 结果行 一律排除） */
 function groupProduct(p: OmParams, groupKey: string): number {
   return p.factors
-    .filter((f) => f.group_key === groupKey && (f.calc === 'multiply' || !f.calc))
+    .filter((f) => f.group_key === groupKey && f.calc === 'multiply')
     .reduce((a, f) => a * Number(f.value), 1)
+}
+
+/**
+ * 组内 calc='weight_item' 的因子按 weight 加权平均：Σ(取值 × 权重) ÷ Σ权重。
+ * 返回 null 表示该组里没有加权项（老库尚未升级到 v5）→ 调用方回退读存量的结果行。
+ * 与 db.ts 的 recomputeComputedFactors() 同一口径（那边回填存量，这边现算）。
+ */
+export function weightedGroupValue(p: OmParams, groupKey: string): number | null {
+  const ms = p.factors.filter((f) => f.group_key === groupKey && f.calc === 'weight_item')
+  if (!ms.length) return null
+  const wSum = ms.reduce((a, f) => a + Number(f.weight ?? 1), 0)
+  if (!(wSum > 0)) return null
+  const v = ms.reduce((a, f) => a + Number(f.value) * Number(f.weight ?? 1), 0) / wSum
+  return Number.isFinite(v) ? v : null
 }
 
 /** 本批测算实际采用的全局因子（两法各自的那几个乘数） */
@@ -315,21 +357,26 @@ export interface OmGlobalFactors {
  * 「追溯面板显示的系数」与「实际算钱用的系数」不一致的情况。
  */
 export function deriveOmFactors(p: OmParams): OmGlobalFactors {
+  // 人员配备系数：优先由 5 个等级行 × 权重 **现算**（改等级系数或改权重即自动联动）；
+  // 老库还没升级到 v5 时组内没有加权项，回退读那行存量结果（同样找不到就报错，不静默给 1）。
+  const staffCoef =
+    weightedGroupValue(p, 'c1_staff') ?? requireNamedFactor(p, 'c1_staff', '人员配备系数（加权）')
   return {
     workloadFactor: groupProduct(p, 'c1_workload'),
     basePriceFactor: groupProduct(p, 'c1_price'),
-    staffCoef: factorValue(p, 'c1_staff', '人员配备系数（加权）', 1),
-    hardCoef: factorValue(p, 'quota_global', '硬件取费调整系数', 1),
-    softCoef: factorValue(p, 'quota_global', '软件取费调整系数', 1),
-    monthFactor: factorValue(p, 'quota_global', '年·月换算系数', 12),
+    staffCoef,
+    hardCoef: requireNamedFactor(p, 'quota_global', '硬件取费调整系数'),
+    softCoef: requireNamedFactor(p, 'quota_global', '软件取费调整系数'),
+    monthFactor: requireNamedFactor(p, 'quota_global', '年·月换算系数'),
     dailyRate: p.dailyRate,
   }
 }
 
-/** 某个因子分组里真正参与连乘的因子（追溯时逐个列出，如 失效率1.2 × 离散1.8 × 复杂1.0） */
+/** 某个因子分组里真正参与连乘的因子（追溯时逐个列出，如 失效率1.2 × 离散1.8 × 复杂1.0）
+ *  过滤条件必须与 groupProduct 完全一致，否则追溯链会列出「实际没乘」的行。 */
 export function factorBreakdown(p: OmParams, groupKey: string): Array<{ name: string; value: number; basis: string | null }> {
   return p.factors
-    .filter((f) => f.group_key === groupKey && (f.calc === 'multiply' || !f.calc))
+    .filter((f) => f.group_key === groupKey && f.calc === 'multiply')
     .map((f) => ({ name: f.name, value: Number(f.value), basis: f.basis }))
 }
 

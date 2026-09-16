@@ -1,5 +1,8 @@
 import * as XLSX from 'xlsx'
 import type { OmCostLine, OmParams, OmQuotaRow, OmResult } from './omCalculator'
+// 「计算方式」与「本组怎么进公式」的中文名与后台、审计页共用同一份（config/rowGroups.ts），
+// 避免 Excel 里写「连乘（参与计算）」而界面上已是新口径这种两边不一致。
+import { CALC_LABELS, GROUP_ROLE_LABELS, groupDecl, isComputedCalc } from '../config/rowGroups'
 
 // 运维测算导出工作簿（4 个 sheet）。
 //
@@ -268,18 +271,30 @@ function sheetParams(params: OmParams, info: OmExportInfo): XLSX.WorkSheet {
   }
   aoa.push([])
 
-  aoa.push(['二、调整因子（om_factors）——「计算方式」决定它是否真的进公式'])
-  aoa.push(['因子分组', '因子名称', '取值', '单位', '适用引擎', '计算方式', '取值依据', '说明'])
+  aoa.push(['二、调整因子（om_factors）——「计算方式」说明本行在组内干什么；只有连乘 / 加权 / 按名取用会真的影响金额'])
+  aoa.push(['因子分组', '因子名称', '取值', '单位', '权重', '适用引擎', '计算方式', '本组怎么进公式', '取值依据', '说明'])
   for (const f of params.factors) {
-    const calc: Record<string, string> = { multiply: '连乘（参与计算）', option: '备选（不参与计算）', product: '分组合计（仅展示）', weighted: '加权平均（仅展示）' }
-    aoa.push([f.group_name || f.group_key, f.name, Number(f.value), f.unit || '', f.engine, calc[String(f.calc)] || f.calc || '', f.basis || '', f.description || ''])
+    const decl = groupDecl('om_factors', f.group_key)
+    aoa.push([
+      f.group_name || f.group_key, f.name, Number(f.value), f.unit || '',
+      isComputedCalc(f.calc) ? '' : Number(f.weight ?? 1),
+      f.engine,
+      CALC_LABELS[String(f.calc)] || f.calc || '',
+      decl ? GROUP_ROLE_LABELS[decl.role] : '未登记分组（引擎不认）',
+      f.basis || '', f.description || '',
+    ])
   }
   aoa.push([])
 
   aoa.push(['三、费率项（om_rate_items）——「计费基数」决定它乘在谁身上'])
-  aoa.push(['费率分组', '费用项目', '费率', '单位', '计费基数', '适用引擎', '说明'])
+  aoa.push(['费率分组', '费用项目', '费率', '单位', '计费基数', '适用引擎', '本组怎么进公式', '说明'])
   for (const r of params.rates) {
-    aoa.push([r.group_name || r.group_key, r.name, Number(r.rate), r.unit || '', r.base_note || '', r.engine, r.description || ''])
+    const decl = groupDecl('om_rate_items', r.group_key)
+    aoa.push([
+      r.group_name || r.group_key, r.name, Number(r.rate), r.unit || '', r.base_note || '', r.engine,
+      decl ? GROUP_ROLE_LABELS[decl.role] : '未登记分组（引擎不认）',
+      r.description || '',
+    ])
   }
   aoa.push([])
 

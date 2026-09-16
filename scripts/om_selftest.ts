@@ -1,5 +1,8 @@
 // 离线验证：用种子参数 + 示例清单跑一遍双引擎，与源表口径对数
-import { calcOm, quotaValueOf, lookupQuota, lookupC1, type OmParams, type OmItemInput } from '../server/utils/omCalculator'
+import { calcOm, quotaValueOf, lookupQuota, lookupC1, deriveOmFactors, weightedGroupValue,
+  type OmParams, type OmItemInput } from '../server/utils/omCalculator'
+import { CALC_LABELS, ROW_GROUPS, GROUP_ROLE_LABELS, isComputedCalc, COLUMN_NOTE_RULES, columnNote } from '../server/config/rowGroups'
+import { DATA_TABLES, labelFor } from '../server/config/dataTables'
 import { traceOmRow } from '../server/utils/omTrace'
 import { buildOmWorkbook } from '../server/utils/omExport'
 import { diffParams } from '../server/utils/omSnapshot'
@@ -8,7 +11,8 @@ import { matchDevice, matchC1Rule, matchQuotaItem, buildQuotaIndex,
   buildSiteTree, parseSiteSelection, buildSiteWhere, countSelectedRows,
 } from '../server/utils/omDeviceMatcher'
 import { readFileSync, existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   omWageBases, omFactors, omRateItems, omC1Benchmarks, omQuotaItems,
   omStationTypes, omSampleItems, omDeviceC1Maps,
@@ -16,15 +20,17 @@ import {
 
 const wage = omWageBases.find((w) => w.is_default)!
 const quotaWage = omWageBases.find((w) => w.usage === 'quota')!
-const fv = (name: string, def: number) => {
+// 与 omCalculator.loadOmParams 同口径：按名取用，找不到就报错（不静默回退默认值）
+const named = (name: string): number => {
   const f = omFactors.find((x) => x.group_key === 'quota_global' && x.name === name)
-  return f ? Number(f.value) : def
+  if (!f) throw new Error(`定额法全局系数缺少「${name}」`)
+  return Number(f.value)
 }
 const quotaVars: Record<string, number> = {
   month_wage: quotaWage.monthly_wage,
-  fp_coef: fv('功能点调整系数', 0.1),
-  wage_ratio: fv('运维单价调整系数', 1),
-  months: fv('年·月换算系数', 12),
+  fp_coef: named('功能点调整系数'),
+  wage_ratio: named('运维单价调整系数'),
+  months: named('年·月换算系数'),
 }
 
 const params: OmParams = {
@@ -372,6 +378,130 @@ const rateQ = omRateItems.filter((r) => r.engine === 'quota')
 const softRow = omQuotaItems.find((q) => q.name === 'PLC应用系统')!
 const plcFormula = quotaValueOf(softRow as any, quotaVars)
 
+// ── 调整因子：界面口径 ↔ 引擎接线 一致性（2026-09-16）──────────────────
+// 本轮修的 bug 正是这里本该发出的警报：om_factors 曾有多行「计算方式」与实际行为相反 ——
+//   5 个等级行标「参与计算」而引擎从未连乘过它们；4 个定额系数标「不参与」而它们是命门乘数；
+//   13 行源表未纳入公式却标「参与计算」。
+// 这些东西靠人眼盯着表格看不出来，所以改成拿「声明」去比对引擎源码里的真实调用点。
+const ROOT = (() => {
+  for (const seed of [process.cwd(), dirname(fileURLToPath(import.meta.url))]) {
+    let cur = seed
+    for (let i = 0; i < 6; i++) {
+      if (existsSync(join(cur, 'server', 'config', 'rowGroups.ts'))) return cur
+      const up = resolve(cur, '..')
+      if (up === cur) break
+      cur = up
+    }
+  }
+  throw new Error('找不到项目根目录（server/config/rowGroups.ts）')
+})()
+const CALC_SRC = readFileSync(join(ROOT, 'server', 'utils', 'omCalculator.ts'), 'utf8')
+const declared = ROW_GROUPS.om_factors.items
+
+const unknownCalc = omFactors.filter((f) => !CALC_LABELS[f.calc]).map((f) => f.calc)
+const seedGroups = [...new Set(omFactors.map((f) => f.group_key))]
+const undeclared = seedGroups.filter((k) => !declared[k])
+const staleDecl = Object.keys(declared).filter((k) => !seedGroups.includes(k))
+
+// 行级 calc 必须与本组角色自洽：说「参与连乘」的行，只能待在声明为连乘的组里
+const roleMismatch = omFactors
+  .filter((f) => {
+    const role = declared[f.group_key]?.role
+    if (f.calc === 'multiply') return role !== 'multiply'
+    if (f.calc === 'weight_item') return role !== 'weighted'
+    if (f.calc === 'named') return role !== 'named'
+    return false
+  })
+  .map((f) => `${f.group_key}/${f.name}(${f.calc})`)
+
+// 声明说怎么进公式，源码里就必须真有那个调用点；声明说不进公式，源码里就不该出现该分组键
+const wiringBad: string[] = []
+for (const [key, d] of Object.entries(declared)) {
+  if (d.role === 'multiply' && !CALC_SRC.includes(`groupProduct(p, '${key}')`)) wiringBad.push(`${key}: 声明连乘但源码没有 groupProduct 调用`)
+  if (d.role === 'weighted' && !CALC_SRC.includes(`weightedGroupValue(p, '${key}')`)) wiringBad.push(`${key}: 声明加权但源码没有 weightedGroupValue 调用`)
+  if (d.role === 'rate' && !CALC_SRC.includes(`sumGroup(p, '${key}'`)) wiringBad.push(`${key}: 声明按基数取费率但源码没有 sumGroup 调用`)
+  if ((d.role === 'none' || d.role === 'option') && CALC_SRC.includes(`'${key}'`)) wiringBad.push(`${key}: 声明不进公式但源码仍引用了该分组键`)
+}
+
+// 「按名取用」的名称集合：声明的 与 源码里真实查的 必须完全相等
+// （少一个＝引擎找不到会当场报错；多一个＝声明里躺着没人用的死条目）
+const lookedUp = new Set<string>()
+for (const m of CALC_SRC.matchAll(/requireNamedFactor\(\s*p\s*,\s*'([^']+)'\s*,\s*'([^']+)'\s*\)/g)) lookedUp.add(`${m[1]}::${m[2]}`)
+for (const m of CALC_SRC.matchAll(/(?<![\w.])named\(\s*'([^']+)'\s*\)/g)) lookedUp.add(`quota_global::${m[1]}`)
+const declaredNamed = new Set<string>()
+for (const [key, d] of Object.entries(declared)) {
+  // namedKeys 不限于 role='named'：加权组的「结果行」也被引擎按名引用（老库回退路径）
+  for (const n of d.namedKeys || []) declaredNamed.add(`${key}::${n}`)
+}
+const namedDiff = [
+  ...[...declaredNamed].filter((x) => !lookedUp.has(x)).map((x) => `声明了但源码没查 ${x}`),
+  ...[...lookedUp].filter((x) => !declaredNamed.has(x)).map((x) => `源码查了但没声明 ${x}`),
+]
+
+// 人员配备系数必须是「现算」的：改一个等级系数，结果要按公式跟着动
+const staffBase = deriveOmFactors(JSON.parse(JSON.stringify(params)) as OmParams).staffCoef
+const staffMut = JSON.parse(JSON.stringify(params)) as OmParams
+staffMut.factors.find((f) => f.group_key === 'c1_staff' && f.name === '1等级（入门级）')!.value = 0.4
+const staffAfter = deriveOmFactors(staffMut).staffCoef
+const staffExpect = 0.4 * 0.1 + 0.8 * 0.5 + 1.0 * 0.25 + 1.2 * 0.1 + 1.5 * 0.05
+const weightSum = params.factors.filter((f) => f.calc === 'weight_item').reduce((a, f) => a + Number(f.weight ?? 1), 0)
+
+// 按名取用的行改名 → 必须报错，不能静默回退默认值（那会让定额法悄悄少乘 1.917 倍）
+const renamedThrows = (() => {
+  const p2 = JSON.parse(JSON.stringify(params)) as OmParams
+  p2.factors = p2.factors.map((f) => (f.name === '硬件取费调整系数' ? { ...f, name: '硬件调整系数' } : f))
+  try {
+    deriveOmFactors(p2)
+    return false
+  } catch {
+    return true
+  }
+})()
+
+// 「源表已列·未纳入公式」的组：把它的值改成 9.99，两法总额必须一分不变
+const lvlMut = JSON.parse(JSON.stringify(params)) as OmParams
+for (const f of lvlMut.factors) if (f.group_key === 'quota_level') f.value = 9.99
+const unusedDrift =
+  Math.abs(calcOm('c1', items, lvlMut).total - r1.total) +
+  Math.abs(calcOm('quota', itemsQ, lvlMut).total - r2.total)
+
+// 系统计算行的存量值必须等于现算值（否则「界面显示的数」与「算钱用的数」会不一致）
+const computedDrift: string[] = []
+for (const row of omFactors) {
+  if (!isComputedCalc(row.calc)) continue
+  const members = omFactors.filter((x) => x.group_key === row.group_key && x.name !== row.name)
+  if (row.calc === 'product') {
+    const ms = members.filter((x) => x.calc === 'multiply')
+    if (!ms.length) continue
+    const v = ms.reduce((a, x) => a * Number(x.value), 1)
+    if (Math.abs(v - row.value) > 1e-9) computedDrift.push(`${row.name}: 存量 ${row.value} ≠ 现算 ${v}`)
+  } else {
+    const ms = members.filter((x) => x.calc === 'weight_item')
+    const ws = ms.reduce((a, x) => a + Number(x.weight ?? 1), 0)
+    if (!ms.length || ws <= 0) continue
+    const v = ms.reduce((a, x) => a + Number(x.value) * Number(x.weight ?? 1), 0) / ws
+    if (Math.abs(v - row.value) > 1e-9) computedDrift.push(`${row.name}: 存量 ${row.value} ≠ 现算 ${v}`)
+  }
+}
+const noneRows = omFactors.filter((f) => declared[f.group_key]?.role === 'none').length
+const roleCount = (['multiply', 'weighted', 'named'] as const)
+  .map((r) => Object.values(declared).filter((d) => d.role === r).length)
+  .join(',')
+
+// 列级「这一格什么时候不算数」提示：规则要指向真实存在的表与列，且必须覆盖到每一行该标的记录
+const noteBadTable = Object.keys(COLUMN_NOTE_RULES).filter((t) => !DATA_TABLES.some((x) => x.key === t))
+const noteRuleBad: string[] = []
+for (const [t, rules] of Object.entries(COLUMN_NOTE_RULES)) {
+  for (const r of rules) {
+    if (labelFor(t, r.column) === r.column) noteRuleBad.push(`${t}.${r.column} 缺中文列名`)
+    if (!r.badge || !r.note) noteRuleBad.push(`${t}.${r.column} 缺徽标或说明`)
+  }
+}
+const quotaFormulaRows = omQuotaItems.filter((q) => q.formula && String(q.formula).trim()).length
+const quotaNoteHit = omQuotaItems.filter((q) => !!columnNote('om_quota_items', q, 'quota')).length
+const factorComputedRows = omFactors.filter((f) => isComputedCalc(f.calc)).length
+const factorNoteHit = omFactors.filter((f) => !!columnNote('om_factors', f, 'value')).length
+
 const checks: Array<[string, boolean, string]> = [
   // —— C.1 工作量法 ——
   ['人天单价 = 525.835249 元', Math.abs(params.dailyRate - 525.835249) < 1e-5, params.dailyRate.toFixed(6)],
@@ -531,6 +661,35 @@ const checks: Array<[string, boolean, string]> = [
     Math.abs(dOneTotal - r1.total) > 1, `差额 ${(dOneTotal - r1.total).toFixed(2)} 元`],
   ['停用一个 C.1 类别 → 报「删除」（停用即不再参与计算）',
     dDrop.total === 1 && dDrop.changes[0]?.type === 'removed', `${dDrop.total} 处 / ${dDrop.changes[0]?.type}`],
+
+  // —— 调整因子：界面口径 ↔ 引擎接线（2026-09-16）——
+  ['种子里每个分组都有接线声明', undeclared.length === 0, undeclared.join(',') || '无'],
+  ['声明里没有已废弃的分组（不留死条目）', staleDecl.length === 0, staleDecl.join(',') || '无'],
+  ['每行的「计算方式」都是已知取值', unknownCalc.length === 0, unknownCalc.join(',') || '无'],
+  ['行级「计算方式」与本组角色自洽（不再出现「标参与却不参与」）', roleMismatch.length === 0, roleMismatch.join(' / ') || '无'],
+  ['声明「怎么进公式」与源码调用点一致', wiringBad.length === 0, wiringBad.join(' / ') || '无'],
+  ['「按名取用」的名称集合 = 源码真实查找的集合', namedDiff.length === 0, namedDiff.join(' / ') || '无'],
+  ['每个分组角色都有中文标签（分组表头徽标用）',
+    Object.values(declared).every((d) => !!GROUP_ROLE_LABELS[d.role]),
+    Object.values(declared).map((d) => d.role).filter((r) => !GROUP_ROLE_LABELS[r]).join(',') || '无'],
+  ['连乘 / 加权 / 按名取用 三类组数 = 2 / 1 / 1', roleCount === '2,1,1', roleCount],
+  ['定额法「级别·能力·业务特征」共 13 行确认为「源表已列·未纳入公式」', noneRows === 13, String(noneRows)],
+  ['人员配备系数由等级×权重现算 = 0.905', Math.abs(staffBase - 0.905) < 1e-9, staffBase.toFixed(6)],
+  ['加权项权重合计 = 1', Math.abs(weightSum - 1) < 1e-9, weightSum.toFixed(4)],
+  ['改 1 等级系数 → 人员配备系数按公式联动',
+    Math.abs(staffAfter - staffExpect) < 1e-9 && Math.abs(staffAfter - staffBase) > 1e-6,
+    `${staffBase.toFixed(6)} → ${staffAfter.toFixed(6)}`],
+  ['按名取用的行改名 → 测算直接报错（不静默回退默认值）', renamedThrows, String(renamedThrows)],
+  ['「源表已列·未纳入公式」的组改值 → 两法总额一分不变', unusedDrift < 1e-6, `漂移 ${unusedDrift.toFixed(6)} 元`],
+  ['系统计算行的存量值 = 现算值（界面显示的与算钱用的是同一个数）', computedDrift.length === 0, computedDrift.join(' / ') || '无'],
+
+  // —— 列级「这一格不算数」提示（同类问题的另一半）——
+  ['列级提示规则指向的表都在注册表内', noteBadTable.length === 0, noteBadTable.join(',') || '无'],
+  ['列级提示规则都有徽标与说明，且列名有中文标签', noteRuleBad.length === 0, noteRuleBad.join(' / ') || '无'],
+  ['定额库写了计算式的条目全部标出「留档」（改了不生效的格子都要标）',
+    quotaFormulaRows > 0 && quotaNoteHit === quotaFormulaRows, `${quotaNoteHit}/${quotaFormulaRows}`],
+  ['调整因子的系统计算行全部标出「系统算」',
+    factorComputedRows > 0 && factorNoteHit === factorComputedRows, `${factorNoteHit}/${factorComputedRows}`],
 ]
 
 console.log('══ 断言 ══')

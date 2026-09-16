@@ -24,6 +24,22 @@ export interface OmWageBase {
 }
 
 /** 调整因子：engine 区分两套引擎（c1=工作量法 / quota=定额法） */
+/**
+ * 调整因子的一行。
+ *
+ * 【calc 是什么】它是「本行在这组里担任什么角色」，**不是**「数值大小」。
+ * 2026-09-16 之前它只有 4 个取值且被直译成「参与计算 / 不参与」，导致两类谎言：
+ *   · 人员配备的 5 个等级行标「参与计算」，实际引擎只读 0.905 那一行，改等级金额纹丝不动；
+ *   · 定额法的硬件/软件取费系数标「备选（不参与）」，实际是定额法的命门乘数。
+ * 故补齐为 7 个取值，逐一对应引擎的真实行为（见 server/config/omFactorGroups.ts 的分组接线声明）：
+ *   multiply    进本组连乘           —— groupProduct() 会连乘
+ *   weight_item 加权项（进本组加权平均）—— weightedGroupValue() 按 weight 加权
+ *   named       按名取用（勿改名）    —— omCalculator.requireNamedFactor() 按 group_key + name 精确定位
+ *   option      备选值（不自动进公式） —— 引擎不读，供其它表/页面单独取用
+ *   listed      源表已列·未纳入公式   —— 引擎不读，仅在后台备查（如运维级别要求）
+ *   product     分组合计（系统计算）  —— 引擎现算，存量值仅供展示与核对，后台只读
+ *   weighted    加权结果（系统计算）  —— 引擎现算，存量值仅供展示与核对，后台只读
+ */
 export interface OmFactor {
   group_key: string
   group_name: string
@@ -32,6 +48,8 @@ export interface OmFactor {
   value: number
   unit: string
   calc: string
+  /** 加权项（calc='weight_item'）在加权平均里的权重；其余行恒为 1 */
+  weight?: number
   description: string
   basis: string
   seq: number
@@ -115,31 +133,44 @@ export const omFactors: OmFactor[] = [
   { group_key: "c1_price_ref", group_name: "价格调整因子·备选", engine: "c1", name: "交付方式", value: 1.2, unit: "ratio", calc: "option", description: "纯现场支持（原表已列但未纳入 D8 连乘，保留备查）", basis: "GB/T28827.7-2022 表A.x 交付方式", seq: 3 },
   { group_key: "c1_price_ref", group_name: "价格调整因子·备选", engine: "c1", name: "响应时间", value: 1.0, unit: "ratio", calc: "option", description: "一级故障处理时间小于24小时（原表已列但未纳入 D8 连乘）", basis: "GB/T28827.7-2022 表A.x 响应时效", seq: 4 },
   { group_key: "c1_price_ref", group_name: "价格调整因子·备选", engine: "c1", name: "水量监管系统·生存周期", value: 1.0, unit: "ratio", calc: "option", description: "1-3年", basis: "GB/T28827.7-2022 表A.x 生存周期", seq: 5 },
-  { group_key: "c1_staff", group_name: "人员配备等级", engine: "c1", name: "1等级（入门级）", value: 0.6, unit: "coef", calc: "multiply", description: "权重 0.1", basis: "源表「调整因子（采纳)」J/K 列", seq: 1 },
-  { group_key: "c1_staff", group_name: "人员配备等级", engine: "c1", name: "2等级（初级）", value: 0.8, unit: "coef", calc: "multiply", description: "权重 0.5", basis: "源表「调整因子（采纳)」J/K 列", seq: 2 },
-  { group_key: "c1_staff", group_name: "人员配备等级", engine: "c1", name: "3等级（中级）", value: 1.0, unit: "coef", calc: "multiply", description: "权重 0.25", basis: "源表「调整因子（采纳)」J/K 列", seq: 3 },
-  { group_key: "c1_staff", group_name: "人员配备等级", engine: "c1", name: "4等级（高级）", value: 1.2, unit: "coef", calc: "multiply", description: "权重 0.1", basis: "源表「调整因子（采纳)」J/K 列", seq: 4 },
-  { group_key: "c1_staff", group_name: "人员配备等级", engine: "c1", name: "5等级（专家级）", value: 1.5, unit: "coef", calc: "multiply", description: "权重 0.05", basis: "源表「调整因子（采纳)」J/K 列", seq: 5 },
-  { group_key: "c1_staff", group_name: "人员配备等级", engine: "c1", name: "人员配备系数（加权）", value: 0.905, unit: "ratio", calc: "weighted", description: "系数 × 权重 加权平均 = 0.6×0.1 + 0.8×0.5 + 1.0×0.25 + 1.2×0.1 + 1.5×0.05", basis: "源表「调整因子（采纳)」J1", seq: 9 },
-  { group_key: "quota_level", group_name: "运维级别要求", engine: "quota", name: "更新频率", value: 1.0, unit: "ratio", calc: "multiply", description: "平均每月1次", basis: "GB/T28827.7-2022 附录A 参数表", seq: 1 },
-  { group_key: "quota_level", group_name: "运维级别要求", engine: "quota", name: "技术支持方式", value: 1.08, unit: "ratio", calc: "multiply", description: "现场支持", basis: "GB/T28827.7-2022 附录A 参数表", seq: 2 },
-  { group_key: "quota_level", group_name: "运维级别要求", engine: "quota", name: "安全等级", value: 1.1, unit: "ratio", calc: "multiply", description: "第五级", basis: "GB/T28827.7-2022 附录A 参数表", seq: 3 },
-  { group_key: "quota_level", group_name: "运维级别要求", engine: "quota", name: "业务重要性", value: 1.1, unit: "ratio", calc: "multiply", description: "核心", basis: "GB/T28827.7-2022 附录A 参数表", seq: 4 },
-  { group_key: "quota_level", group_name: "运维级别要求", engine: "quota", name: "响应时效", value: 1.1, unit: "ratio", calc: "multiply", description: "一级故障处理时间小于24h", basis: "GB/T28827.7-2022 附录A 参数表", seq: 5 },
-  { group_key: "quota_level", group_name: "运维级别要求", engine: "quota", name: "软件完整性级别", value: 1.0, unit: "ratio", calc: "multiply", description: "没有明确的完整性级别", basis: "GB/T28827.7-2022 附录A 参数表", seq: 6 },
-  { group_key: "quota_level", group_name: "运维级别要求", engine: "quota", name: "运维级别要求合计", value: 1.43748, unit: "ratio", calc: "product", description: "六项连乘", basis: "源表「关键属性描述及调整因子」", seq: 9 },
-  { group_key: "quota_ability", group_name: "运维能力要求", engine: "quota", name: "团队经验", value: 1.0, unit: "ratio", calc: "multiply", description: "无特别要求", basis: "", seq: 1 },
-  { group_key: "quota_ability", group_name: "运维能力要求", engine: "quota", name: "自动化程度", value: 1.0, unit: "ratio", calc: "multiply", description: "无特别要求", basis: "", seq: 2 },
-  { group_key: "quota_feature", group_name: "运维系统及业务特征", engine: "quota", name: "部署方式", value: 1.3, unit: "ratio", calc: "multiply", description: "分散", basis: "", seq: 1 },
-  { group_key: "quota_feature", group_name: "运维系统及业务特征", engine: "quota", name: "用户规模", value: 0.9, unit: "ratio", calc: "multiply", description: "小于 1000", basis: "", seq: 2 },
-  { group_key: "quota_feature", group_name: "运维系统及业务特征", engine: "quota", name: "系统关联性", value: 1.14, unit: "ratio", calc: "multiply", description: "6个以上", basis: "", seq: 3 },
-  { group_key: "quota_feature", group_name: "运维系统及业务特征", engine: "quota", name: "业务特征合计", value: 1.3338, unit: "ratio", calc: "product", description: "= 部署方式 × 用户规模 × 系统关联性", basis: "源表「关键属性描述及调整因子」", seq: 9 },
-  { group_key: "quota_global", group_name: "定额法全局系数", engine: "quota", name: "年·月换算系数", value: 12.0, unit: "ratio", calc: "multiply", description: "定额值按「元/月」计，年运维费 = 定额 × 数量 × 12 × 类别系数", basis: "", seq: 1 },
-  { group_key: "quota_global", group_name: "定额法全局系数", engine: "quota", name: "硬件取费调整系数", value: 1.91731, unit: "ratio", calc: "option", description: "定额法硬件的取费调整系数（源表实际取值）", basis: "", seq: 2 },
-  { group_key: "quota_global", group_name: "定额法全局系数", engine: "quota", name: "软件取费调整系数", value: 1.41881, unit: "ratio", calc: "option", description: "定额法软件的取费调整系数；⚠️源表对软件条目实际也乘了 1.91731", basis: "", seq: 3 },
-  { group_key: "quota_global", group_name: "定额法全局系数", engine: "quota", name: "运维单价调整系数", value: 3.47822, unit: "ratio", calc: "option", description: "2008年 39340 元/年 → 2025年官方 136833 元/年（已内含于定额表的定额值中，勿重复乘）", basis: "河北省信息技术行业工资涨幅", seq: 4 },
-  { group_key: "quota_global", group_name: "定额法全局系数", engine: "quota", name: "生产率", value: 0.74, unit: "ratio", calc: "option", description: "2025年中国软件行业基准数据库(CSBMK_201906)，用于推导定额值，勿重复乘", basis: "CSBMK 基准数据", seq: 5 },
-  { group_key: "quota_global", group_name: "定额法全局系数", engine: "quota", name: "功能点调整系数", value: 0.1, unit: "ratio", calc: "option", description: "用于推导软件类定额值，勿重复乘", basis: "", seq: 6 },
+  // 人员配备等级：5 个等级是「加权项」，本身不单独进公式；它们与 weight 一起决定下面那行 0.905。
+  // 2026-09-16 修正前标的是 multiply（连乘/参与计算），但引擎从未连乘过它们 —— 改等级金额不变，
+  // 属于「界面说谎」。现在权重独立成列，改等级系数或权重 → 0.905 由引擎现算并联动。
+  { group_key: "c1_staff", group_name: "人员配备等级", engine: "c1", name: "1等级（入门级）", value: 0.6, unit: "coef", calc: "weight_item", weight: 0.1, description: "入门级；占人员配备权重 10%", basis: "源表「调整因子（采纳)」J/K 列", seq: 1 },
+  { group_key: "c1_staff", group_name: "人员配备等级", engine: "c1", name: "2等级（初级）", value: 0.8, unit: "coef", calc: "weight_item", weight: 0.5, description: "初级；占人员配备权重 50%（主力）", basis: "源表「调整因子（采纳)」J/K 列", seq: 2 },
+  { group_key: "c1_staff", group_name: "人员配备等级", engine: "c1", name: "3等级（中级）", value: 1.0, unit: "coef", calc: "weight_item", weight: 0.25, description: "中级；占人员配备权重 25%", basis: "源表「调整因子（采纳)」J/K 列", seq: 3 },
+  { group_key: "c1_staff", group_name: "人员配备等级", engine: "c1", name: "4等级（高级）", value: 1.2, unit: "coef", calc: "weight_item", weight: 0.1, description: "高级；占人员配备权重 10%", basis: "源表「调整因子（采纳)」J/K 列", seq: 4 },
+  { group_key: "c1_staff", group_name: "人员配备等级", engine: "c1", name: "5等级（专家级）", value: 1.5, unit: "coef", calc: "weight_item", weight: 0.05, description: "专家级；占人员配备权重 5%", basis: "源表「调整因子（采纳)」J/K 列", seq: 5 },
+  { group_key: "c1_staff", group_name: "人员配备等级", engine: "c1", name: "人员配备系数（加权）", value: 0.905, unit: "ratio", calc: "weighted", description: "系统计算结果 = Σ(等级系数 × 权重) ÷ Σ权重 = 0.6×0.1 + 0.8×0.5 + 1.0×0.25 + 1.2×0.1 + 1.5×0.05；改上面等级或权重即自动更新，本行不可编辑", basis: "源表「调整因子（采纳)」J1", seq: 9 },
+  // ⚠️ 下面三组（运维级别要求 / 运维能力要求 / 运维系统及业务特征）是**源表列出但未纳入公式**的：
+  // 定额法的运维费单价 = 定额表按设备名 INDEX/MATCH 直接取「元/月」，没有再乘这些级别系数；
+  // 引擎里也确实没有 groupProduct('quota_level') 之类的调用（见 config/omFactorGroups.ts 的接线声明与 check:om 断言）。
+  // 2026-09-16 修正前这 13 行标的是「连乘（参与计算）」，属于界面说谎 —— 主人照着调，金额不会变。
+  // 所以改标 listed（源表已列·未纳入公式），并保留原有数值供对照源表。
+  { group_key: "quota_level", group_name: "运维级别要求", engine: "quota", name: "更新频率", value: 1.0, unit: "ratio", calc: "listed", description: "平均每月1次（源表已列，未进定额法公式）", basis: "GB/T28827.7-2022 附录A 参数表", seq: 1 },
+  { group_key: "quota_level", group_name: "运维级别要求", engine: "quota", name: "技术支持方式", value: 1.08, unit: "ratio", calc: "listed", description: "现场支持（源表已列，未进定额法公式）", basis: "GB/T28827.7-2022 附录A 参数表", seq: 2 },
+  { group_key: "quota_level", group_name: "运维级别要求", engine: "quota", name: "安全等级", value: 1.1, unit: "ratio", calc: "listed", description: "第五级（源表已列，未进定额法公式）", basis: "GB/T28827.7-2022 附录A 参数表", seq: 3 },
+  { group_key: "quota_level", group_name: "运维级别要求", engine: "quota", name: "业务重要性", value: 1.1, unit: "ratio", calc: "listed", description: "核心（源表已列，未进定额法公式）", basis: "GB/T28827.7-2022 附录A 参数表", seq: 4 },
+  { group_key: "quota_level", group_name: "运维级别要求", engine: "quota", name: "响应时效", value: 1.1, unit: "ratio", calc: "listed", description: "一级故障处理时间小于24h（源表已列，未进定额法公式）", basis: "GB/T28827.7-2022 附录A 参数表", seq: 5 },
+  { group_key: "quota_level", group_name: "运维级别要求", engine: "quota", name: "软件完整性级别", value: 1.0, unit: "ratio", calc: "listed", description: "没有明确的完整性级别（源表已列，未进定额法公式）", basis: "GB/T28827.7-2022 附录A 参数表", seq: 6 },
+  { group_key: "quota_level", group_name: "运维级别要求", engine: "quota", name: "运维级别要求合计", value: 1.43748, unit: "ratio", calc: "listed", description: "源表「六项连乘」的结果；源表未将其乘进运维费单价，仅备查", basis: "源表「关键属性描述及调整因子」", seq: 9 },
+  { group_key: "quota_ability", group_name: "运维能力要求", engine: "quota", name: "团队经验", value: 1.0, unit: "ratio", calc: "listed", description: "无特别要求（源表已列，未进定额法公式）", basis: "", seq: 1 },
+  { group_key: "quota_ability", group_name: "运维能力要求", engine: "quota", name: "自动化程度", value: 1.0, unit: "ratio", calc: "listed", description: "无特别要求（源表已列，未进定额法公式）", basis: "", seq: 2 },
+  { group_key: "quota_feature", group_name: "运维系统及业务特征", engine: "quota", name: "部署方式", value: 1.3, unit: "ratio", calc: "listed", description: "分散（源表已列，未进定额法公式）", basis: "", seq: 1 },
+  { group_key: "quota_feature", group_name: "运维系统及业务特征", engine: "quota", name: "用户规模", value: 0.9, unit: "ratio", calc: "listed", description: "小于 1000（源表已列，未进定额法公式）", basis: "", seq: 2 },
+  { group_key: "quota_feature", group_name: "运维系统及业务特征", engine: "quota", name: "系统关联性", value: 1.14, unit: "ratio", calc: "listed", description: "6个以上（源表已列，未进定额法公式）", basis: "", seq: 3 },
+  { group_key: "quota_feature", group_name: "运维系统及业务特征", engine: "quota", name: "业务特征合计", value: 1.3338, unit: "ratio", calc: "listed", description: "= 部署方式 × 用户规模 × 系统关联性；源表未将其乘进运维费单价，仅备查", basis: "源表「关键属性描述及调整因子」", seq: 9 },
+  // ⚠️ 本组是「按名取用」（calc=named）：引擎不按 calc 而按 group_key + name 精确找行
+  // （omCalculator 的 requireNamedFactor()）。因此**这些行的名称是接口，改名即失效** ——
+  // 改名后引擎找不到就用兜底默认值（硬/软件系数→1、月份→12），定额法会静默少乘 1.917 倍。
+  // 2026-09-16 修正前它们标的是「备选（不参与连乘）」，与实际行为完全相反：
+  // 恰恰是这几行在算钱，而「备选」两个字会让人以为删掉无所谓。
+  { group_key: "quota_global", group_name: "定额法全局系数", engine: "quota", name: "年·月换算系数", value: 12.0, unit: "ratio", calc: "named", description: "定额值按「元/月」计，年运维费 = 定额 × 数量 × 12 × 类别系数；引擎按名取用，勿改名", basis: "", seq: 1 },
+  { group_key: "quota_global", group_name: "定额法全局系数", engine: "quota", name: "硬件取费调整系数", value: 1.91731, unit: "ratio", calc: "named", description: "定额法硬件的取费调整系数（源表实际取值 G17）；引擎按名取用，勿改名", basis: "", seq: 2 },
+  { group_key: "quota_global", group_name: "定额法全局系数", engine: "quota", name: "软件取费调整系数", value: 1.41881, unit: "ratio", calc: "named", description: "定额法软件的取费调整系数 G16；⚠️源表对软件条目实际也乘了 1.91731；引擎按名取用，勿改名", basis: "", seq: 3 },
+  { group_key: "quota_global", group_name: "定额法全局系数", engine: "quota", name: "运维单价调整系数", value: 3.47822, unit: "ratio", calc: "named", description: "定额推导式变量 wage_ratio：2008年 39340 元/年 → 2025年官方 136833 元/年（已内含于定额值中，勿重复乘）", basis: "河北省信息技术行业工资涨幅", seq: 4 },
+  { group_key: "quota_global", group_name: "定额法全局系数", engine: "quota", name: "生产率", value: 0.74, unit: "ratio", calc: "option", description: "2025年中国软件行业基准数据库(CSBMK_201906)，仅用于推导定额值，引擎不读本行", basis: "CSBMK 基准数据", seq: 5 },
+  { group_key: "quota_global", group_name: "定额法全局系数", engine: "quota", name: "功能点调整系数", value: 0.1, unit: "ratio", calc: "named", description: "定额推导式变量 fp_coef：用于推导软件类定额值，勿重复乘", basis: "", seq: 6 },
 ]
 
 export const omRateItems: OmRateItem[] = [
