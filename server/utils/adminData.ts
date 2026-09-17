@@ -2,7 +2,7 @@
 // 所有 /api/admin/data/* 路由共用；权限由 server/middleware/permission.ts 统一收口。
 import db from './db'
 import { createError } from 'h3'   // 与 server/utils/auth.ts 一致：显式导入，不依赖 Nuxt 自动导入
-import { DATA_TABLES, DATA_CATEGORIES, getTableConf, labelFor, DataTableConf } from '../config/dataTables'
+import { DATA_TABLES, DATA_CATEGORIES, getTableConf, labelFor, calcRoleOf, DataTableConf } from '../config/dataTables'
 import { CALC_LABELS, isComputedCalc } from '../config/rowGroups'
 import { logOperation } from './logOperation'
 
@@ -303,6 +303,12 @@ export async function fkOptionsForTable(key: string): Promise<Record<string, { v
 export function registry() {
   return {
     categories: DATA_CATEGORIES,
-    tables: DATA_TABLES,
+    // 把「本表动不动钱」的角色声明一并下发（见 config/dataTables.ts 的 TABLE_CALC_ROLES）：
+    // 后台要在表名旁边显示徽标，让用户一眼看出改这张表到底有没有用 ——
+    // 否则几张表都长着「启用 / 来源 / 适用引擎」的开关模样，改完没反应只能靠猜。
+    tables: DATA_TABLES.map((t) => {
+      const decl = calcRoleOf(t.key)
+      return { ...t, calcRole: decl?.role || null, calcRoleNote: decl?.reason || '' }
+    }),
   }
 }

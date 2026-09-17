@@ -79,7 +79,13 @@ function pickDefaultPdr(options: PdrOption[]): number | null {
 }
 
 export async function buildPricingStandards() {
-  const paramRows = (await db.prepare('SELECT * FROM estimation_parameters ORDER BY standard_id, seq').all()) as any[]
+  // ⚠️ 必须过滤 is_active：本表是计价引擎唯一真正读取的参数表，
+  // 而它同时也是数据维护后台里可被「停用」的表 —— 不过滤的话，后台那个开关就是个摆设，
+  // 用户停用一条参数（如某个不适用的省标费率）却发现测算页照旧能选到它。
+  // 用 IS NOT FALSE 而非 = true：兼容历史 NULL 行（老库该列曾可为空）。
+  const paramRows = (await db
+    .prepare('SELECT * FROM estimation_parameters WHERE is_active IS NOT FALSE ORDER BY standard_id, seq')
+    .all()) as any[]
 
   // 各城市开发/运维费率（用于 rateMode='city' 及缺费率时补齐）
   const rateRows = (await db

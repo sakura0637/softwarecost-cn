@@ -2,14 +2,14 @@
 import { ref, computed, reactive, onMounted } from 'vue'
 import { useAuth } from '~/composables/useAuth'
 // 枚举列的中文映射（如 om_factors.engine 的 c1 → C.1 工作量法），纯静态配置
-import { enumFor } from '~/server/config/dataTables'
+import { enumFor, CALC_ROLE_LABELS } from '~/server/config/dataTables'
 // 分组接线声明（每个分组到底怎么进公式）与行级「计算方式」的中文含义 —— 与后端同一份，纯静态配置
 import { rowGroupsFor, GROUP_ROLE_LABELS, GROUP_ROLE_TONE, isComputedCalc, columnNote } from '~/server/config/rowGroups'
 
 const { can, api, token } = useAuth()
 
 interface ColMeta { name: string; label: string; uiType: string; nullable: boolean; readonly: boolean; hidden: boolean; isPk: boolean; pkAuto: boolean; isFk: boolean; fkTable?: string; fkLabel?: string }
-interface TableConf { key: string; label: string; category: string; hint?: string; groupBy?: string }
+interface TableConf { key: string; label: string; category: string; hint?: string; groupBy?: string; calcRole?: string; calcRoleNote?: string }
 interface Category { key: string; label: string }
 
 const categories = ref<Category[]>([])
@@ -118,6 +118,21 @@ const editableColumns = computed(() => columns.value.filter((c) => !c.readonly))
 const visibleColumns = computed(() => columns.value.filter((c) => !c.hidden))
 /** 当前表的说明（告诉管理员这张表怎么看、怎么填） */
 const activeHint = computed(() => tables.value.find((t) => t.key === activeTable.value)?.hint || '')
+
+// ── 本表与「算钱」的关系徽标（来自 config/dataTables.ts 的 TABLE_CALC_ROLES）──
+// 为什么要显这个：后台里几张表都长着「启用 / 来源 / 适用引擎」的开关模样，
+// 但只有一部分真的被引擎读取。徽标把「改这张表有没有用」写在标题旁边，不用再去试。
+const activeRole = computed(() => tables.value.find((t) => t.key === activeTable.value)?.calcRole || '')
+const activeRoleMeta = computed(() => {
+  const m = (CALC_ROLE_LABELS as any)[activeRole.value]
+  return m ? (m as { label: string; note: string }) : null
+})
+const activeRoleNote = computed(() => tables.value.find((t) => t.key === activeTable.value)?.calcRoleNote || '')
+function roleTone(r: string) {
+  if (r === 'engine') return 'border-green-200 bg-green-50 text-green-700'
+  if (r === 'archive') return 'border-gray-200 bg-gray-50 text-gray-600'
+  return 'border-amber-200 bg-amber-50 text-amber-700'
+}
 
 // ── 分组渲染（有 groupBy 的表，如「调整因子」按因子分组分层）──
 // 为什么要分组：这张表里混着三种性质完全不同的行 —— 真正参与计算的参数、
@@ -324,6 +339,12 @@ onMounted(loadMeta)
         <template v-else>
           <div class="mb-3 flex flex-wrap items-center gap-2">
             <h2 class="mr-2 text-lg font-semibold text-gray-900">{{ tables.find((t) => t.key === activeTable)?.label }}</h2>
+            <span
+              v-if="activeRoleMeta"
+              class="rounded-lg border px-2 py-0.5 text-xs font-medium"
+              :class="roleTone(activeRole)"
+              :title="activeRoleNote"
+            >{{ activeRoleMeta.label }}</span>
             <button v-if="can('data:create')" class="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700" @click="openAdd">+ 新增</button>
             <button class="rounded-lg border border-gray-200 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50" @click="exportXlsx">导出 Excel</button>
             <button v-if="can('data:create')" class="rounded-lg border border-gray-200 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50" @click="showImport = true">导入 Excel</button>
