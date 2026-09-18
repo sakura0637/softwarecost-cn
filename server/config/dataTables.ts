@@ -28,6 +28,7 @@ export const DATA_CATEGORIES = [
   { key: 'standards', label: '造价标准' },
   { key: 'pricing', label: '地区费率' },
   { key: 'benchmarks', label: '行业基准' },
+  { key: 'defaults', label: '全局兜底' },
   { key: 'om', label: '运维参数' },
 ]
 
@@ -63,8 +64,12 @@ export const TABLE_CALC_ROLES: Record<string, { role: CalcRole; inert?: string[]
     reason: '只被 /standards 页展开显示与维护，不进任何计算',
   },
   standard_benchmarks: {
-    role: 'dead',
-    reason: '全站零消费方、零种子；且缺「开发/运维」类别列，暂不能顶替 estimation_parameters',
+    role: 'engine', inert: ['ufp_method', 'ufp_weights', 'reuse_factors', 'cf', 'pdr', 'hm', 'rate', 'adjustment_factors'],
+    reason: 'standard 驱动主表：algorithm（用哪套功能点方法）与 complexity_rules（复杂度判定矩阵）已被 pricingParams 读取；其余取值列待第二步接入',
+  },
+  pricing_defaults: {
+    role: 'engine',
+    reason: '全局兜底参数：功能点方法库、复杂度判定矩阵、兜底 HM/PDR、省份→代表城市。引擎在这些取不到标准值时读它',
   },
   estimation_benchmarks: {
     role: 'page', inert: ['is_active'],
@@ -182,16 +187,17 @@ export const DATA_TABLES: DataTableConf[] = [
     readonly: ['created_at', 'updated_at'],
     json: ['ufp_weights', 'reuse_factors', 'cf', 'pdr', 'adjustment_factors'],
     fk: { standard_id: { table: 'standards', label: 'name' } },
-    hint: `一份标准对应一套测算取值（1:1），是主从重构时规划的「标准测算参数」目标表。
-⚠️【本表当前没有任何消费方，也没有种子数据】实测：全站没有接口、没有页面、没有引擎读它，
-首次部署也不会灌入任何行（只有手工跑过 scripts/migrate_standards_3nf.mjs 才会有数据）。
-所以现在在本表增删改，不会影响任何测算与任何页面 —— 这是已知状态，不是 bug。
-【为什么还没接上】本表缺计价引擎必需的「开发 / 运维」类别列（引擎靠它区分两档生产率，
-混用会算出荒谬的运维单价），也缺参数名与选项标签的载体，故不能直接顶替「行业基准参数」。
-【接上之前请勿在此维护】要改测算取值，去「行业基准参数」。
-【各列规划含义】ufp_method 功能点方法；ufp_weights 功能点权值；reuse_factors 复用度因子；
-cf 规模变更调整因子 CF；pdr 人时/功能点生产率；hm 人月折算（人时/人月，一般 176）；
-rate 费率；adjustment_factors 调整因子。数字应取自该标准正文，不是本系统测算出来的。`,
+    hint: `「标准驱动」的主表：一个标准一行，声明这套标准该怎么算。
+【本表已经生效的列】算法（用哪套功能点方法，取值是「全局测算兜底」表里方法库的键）、
+复杂度判定矩阵（本标准的 RET/DET/FTR → 低/中/高，留空则用全局默认）。
+改这两列会真的改变测算结果；两列都留空时统一走全局默认，不会报错。
+【本表暂未生效的列（功能点方法 / 功能点权重 / 复用度因子 / CF / PDR / HM / 费率 / 调整因子）】
+实测：这些取值列目前没有任何代码读取。引擎的档位（hm / 费率 / 基准生产率）读「行业基准参数」，
+功能点权值读「全局测算兜底」。所以在本表改这些列不会影响任何测算 —— 要改取值请去那两张表。
+【为什么暂未接入】本表缺计价引擎必需的「开发 / 运维」类别列（引擎靠它区分两档生产率，
+把开发生产率套到运维标准上会算出荒谬的运维单价），接上之前不能顶替「行业基准参数」。
+【何时接入】第二步：补类别列 → 写种子生成器（从「行业基准参数」映射，迁移脚本里有验证过的对应逻辑）
+→ 引擎改读本表 → 回归验证金额逐项一致。届时本表才成为唯一的取值来源。`,
   },
   // ── 设备价格库三表不在本后台维护（2026-09-03 下线）──
   // devices / stations / station_devices 统一走 /admin/devices 专用页：
@@ -227,6 +233,32 @@ rate 费率；adjustment_factors 调整因子。数字应取自该标准正文�
 所以要调测算口径，改最新的 2025 那两行；要修历史曲线的形状，才动早年行。
 改完可到 /city 页看曲线是否仍然平滑。`,
   },
+  // ── 全局兜底（标准没给参数时用它顶上；也是「不把领域常量写死在代码里」的落点）──
+  {
+    key: 'pricing_defaults',
+    label: '全局测算兜底',
+    category: 'defaults',
+    pk: 'id',
+    pkAuto: true,
+    readonly: ['updated_at'],
+    json: ['value'],
+    hint: `全局兜底参数表：测算引擎在标准没有给出某项参数时读它顶上。
+本表是「标准驱动」改革的落点 —— 以前 UFP 权值、兜底生产率这些东西是写死在代码里的，
+现在一律从这里读，改参数不用改代码、也不用发版。
+【本表五个键分别管什么】key 列写的是内部键名，取值是 JSON，改的时候要保持结构完整：
+　参数键「功能点方法库」ufp_methods —— 功能点方法（详细功能点法 / 快速功能点法 / 全功能点法）各自
+　　的类型权值，以及复杂度的判定矩阵入口。各标准用哪一套由「标准基准取值」表的算法列指定。
+　参数键「复杂度判定矩阵」complexity_rules —— 由 RET/DET/FTR 判定「低/中/高」的阈值矩阵。
+　　ILF/EIF 看 RET×DET，EI/EO/EQ 看 FTR×DET（三类事务阈值不同）。这是本次新补上的一环：
+　　以前系统根本没有复杂度判定规则，只能让 AI 拍脑袋填。
+　参数键「人月折算系数兜底值」fallback_hm —— 标准没给人月折算系数时用（174 人时/人月）。
+　参数键「基准生产率兜底值」fallback_pdr —— 标准「声明了生产率但没给数值」时用；开发与运维两档
+　　差一个数量级，不可混用（把开发生产率套到运维标准上会算出荒谬的单价）。
+　参数键「省份 → 代表城市」province_city —— 标准没给费率时，按该省代表城市取城市费率补齐。
+【改完何时生效】立即生效，无需重启。但取不到、JSON 坏、矩阵结构不合法时会当场报错拒绝测算
+　（宁可测算失败也不给错数），所以改完请先核对 JSON 结构无误。
+【写入策略】首次部署灌入；已存在的键不会被部署覆盖（后台改过的值保留）。`,
+  },
   // ── 行业基准 ──
   {
     key: 'estimation_benchmarks',
@@ -241,8 +273,8 @@ rate 费率；adjustment_factors 调整因子。数字应取自该标准正文�
 所以改本表只影响那个页面的显示，不影响任何测算金额。
 【「启用」列不产生效果】全站没有任何地方按它过滤，勾掉它不会让任何数据消失（留作将来用）。
 【级别】national 国家级 / provincial 省级。
-【该改哪张】要改真正影响测算的标准取值，请改「行业基准参数」。
-「标准基准取值」目前是空表且无任何消费方，写那里同样不生效，别被它的名字骗了。
+【该改哪张】要改真正影响测算的取值，请改「行业基准参数」（档位）与「全局测算兜底」（功能点权值 / 复杂度矩阵 / 兜底值）；
+「标准基准取值」现在只声明「这套标准用哪套算法、哪套复杂度矩阵」，它的取值列尚未接入，写那里不生效。
 【新版结构】重构后本表已拆成「造价标准 + 标准基准取值（1:1）」，本表仅为兼容历史数据与旧接口保留。`,
   },
   {
@@ -254,13 +286,15 @@ rate 费率；adjustment_factors 调整因子。数字应取自该标准正文�
     readonly: ['created_at'],
     json: ['values'],
     fk: { standard_id: { table: 'standards', label: 'name' } },
-    hint: `★ 这张表是「标准 → 测算取值」的唯一权威源：计价引擎（server/utils/pricingStandards.ts）只读它。
+    hint: `★ 这张表是「标准 → 测算档位」的权威源：计价引擎（server/utils/pricingStandards.ts）读它。
 它直接决定测算页能选到哪些标准、各标准的 PDR / 费率是多少 —— 也就是说，改这里等于改报价。
-【和另外三张标准表的区别（最容易搞混的地方）】
+【和另外几张标准表的分工（最容易搞混的地方）】
 · 造价标准 = 只有目录（名称 / 代号 / 摘要），不参与计算；
 · 标准参数明细 = 只给 /standards 页展示看，不参与计算；
-· 标准基准取值 = 当前空表、零消费方，不参与计算；
-· 本表 = 唯一被引擎读取的，改这里才动金额。
+· 标准基准取值 = 只声明「这套标准用哪套算法、哪套复杂度矩阵」，取值列暂未接入；
+· 全局测算兜底 = 功能点权值 / 复杂度判定矩阵 / 兜底 HM·PDR / 省份→城市（标准没给时顶上的那部分）；
+· 本表 = 引擎取档位（hm / 费率 / 基准生产率 / 调整因子选项）的地方。
+三处各管一段，想知道「改哪个数会动金额」，先看本段的分工。
 【「启用」列会真的生效】取消勾选后，该参数不再进入引擎（按 is_active IS NOT FALSE 过滤），
 可能让某个标准从测算页的档位里消失或失去生产率 / 费率。
 【参数类型】weight 权重 / factor 系数 / rate 费率 / productivity 生产率 / formula 公式。
@@ -480,6 +514,14 @@ export const DATA_LABELS: Record<string, string> = {
   'standard_benchmarks.hm': 'HM',
   'standard_benchmarks.rate': '费率',
   'standard_benchmarks.adjustment_factors': '调整因子',
+  'standard_benchmarks.algorithm': '算法',
+  'standard_benchmarks.complexity_rules': '复杂度判定矩阵',
+  'pricing_defaults.id': '编号',
+  'pricing_defaults.key': '参数键',
+  'pricing_defaults.value': '取值（JSON）',
+  'pricing_defaults.label': '名称',
+  'pricing_defaults.note': '说明',
+  'pricing_defaults.updated_at': '更新时间',
   'estimation_benchmarks.standard_code': '标准代号',
   'estimation_benchmarks.standard_name': '标准名称',
   'estimation_benchmarks.edition': '版次',
@@ -664,6 +706,14 @@ export const DATA_LABELS: Record<string, string> = {
 
 // 枚举列的可读取值（数据维护页把存库的英文/编码渲染成中文下拉）
 export const DATA_ENUMS: Record<string, Record<string, string>> = {
+  // 全局测算兜底：key 是内部键名，列表里显示中文，避免让人对着 ufp_methods 猜
+  'pricing_defaults.key': {
+    ufp_methods: '功能点方法库',
+    complexity_rules: '复杂度判定矩阵',
+    fallback_hm: '人月折算系数兜底值',
+    fallback_pdr: '基准生产率兜底值',
+    province_city: '省份 → 代表城市',
+  },
   // 造价标准（national/provincial/municipal/industry/military 是历史编码，页面显示中文）
   'standards.level': {
     national: '国家标准',
@@ -672,7 +722,7 @@ export const DATA_ENUMS: Record<string, Record<string, string>> = {
     industry: '行业标准',
     military: '军用标准',
   },
-  'standards.source': { seed: '系统种子（随版本更新）', manual: '人工维护（重灌不覆盖）' },
+  'standards.source': { seed: '系统种子（首次部署灌入）', manual: '人工维护' },
   'standard_parameters.param_type': {
     weight: '权重',
     factor: '系数',

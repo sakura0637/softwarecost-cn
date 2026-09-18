@@ -8,17 +8,11 @@ const projectId = Number(route.params.id)
 
 // 计价引擎：与服务端共用同一份实现（shared/），保证前端预览与后端测算结果完全一致
 import { runPricingEngine, nonFunctionalFactor } from '@/shared/pricingEngine'
-
-// UFP 权重：IFPUG/NESMA 标准常量（非示例值）
-const UFP_WEIGHT: Record<string, Record<string, number>> = {
-  ILF: { 低: 7, 中: 10, 高: 15 },
-  EIF: { 低: 5, 中: 7, 高: 10 },
-  EI: { 低: 3, 中: 4, 高: 6 },
-  EO: { 低: 4, 中: 5, 高: 7 },
-  EQ: { 低: 3, 中: 4, 高: 6 }
-}
-const computeUFP = (type: string, complexity: string) =>
-  UFP_WEIGHT[type]?.[complexity] ?? 0
+// 功能点计量的纯逻辑（同样来自 shared/，前后端同源）
+// ⚠️ 权值与复杂度判定矩阵不写在这里 —— 一律从 /api/pricing-standards 取（库里那份才是权威）。
+//    历史教训：这里曾硬编码一份 IFPUG 权值、server/utils/pricing.ts 又硬编码一份，
+//    「标准基准取值」表里还存着第三份（数值恰好相同），导致在表里改权重完全不生效。
+import { classifyComplexity, ufpWeightOf } from '@/shared/ufp'
 
 const project = ref<any>(null)
 const rawTextPreview = ref('')
@@ -44,6 +38,24 @@ const city = ref('')
 const selectedStd = computed<any | null>(
   () => standards.value.find((s) => s.id === stdId.value) || standards.value[0] || null
 )
+
+// 本次生效的功能点方法与复杂度判定矩阵：
+// 全局默认（接口的 ufpDefaults）+ 该标准的声明（standard 的 ufp）：标准自己声明了就用标准那份。
+const ufpDefaults = ref<any>(null)
+const activeUfp = computed<any | null>(() => {
+  const def = ufpDefaults.value
+  if (!def) return null
+  const s = selectedStd.value
+  return {
+    method: s?.ufp?.method || def.method,
+    methodLabel: s?.ufp?.methodLabel || def.methodLabel,
+    complexityBased: s?.ufp ? s.ufp.complexityBased : def.complexityBased,
+    weights: s?.ufp?.weights || def.weights,
+    rules: s?.ufp?.rules || def.rules,
+    methodSource: s?.ufp?.methodSource || '全局默认',
+    rulesSource: s?.ufp?.rulesSource || '全局默认',
+  }
+})
 
 // 生效费率：选了城市用城市费率，否则用标准自带费率
 const effectiveRate = computed<number | null>(() => {
@@ -146,9 +158,18 @@ const months = computed(() => engine.value?.workMonths ?? null)
 // 切换标准时，生产率 / 城市 / 调整因子一并重置（不同标准的因子取值不同，不可沿用）
 watch(selectedStd, (s) => {
   if (!s) return
+  // 不同标准可能用不同的功能点方法 → 用新方法的权值重算各功能点 UFP
+  editableFps.value.forEach((r) => recomputeRow(r, false))
   pdr.value = s.pdr
   city.value = s.rateMode === 'city' ? s.suggestedCity || cities.value[0]?.city || '' : ''
   resetFactors()
+})
+
+// 功能点方法 / 权值就绪后（或库里的权值被改动过）用最新值重算各行 UFP。
+// 必须挂在这里而不是挂在载入流程里：标准清单与项目功能点是两个异步请求，
+// 谁先返回不确定；只挂在某一处会出现「清单先到、行后到」时用了旧权值的情况。
+watch(activeUfp, () => {
+  editableFps.value.forEach((r) => recomputeRow(r, false))
 })
 
 const loadProject = async () => {
@@ -158,9 +179,12 @@ const loadProject = async () => {
     project.value = res.project
     fps.value = res.functionPoints || []
     editableFps.value = hydrate(fps.value)
-    // 仅当项目已存的标准仍存在于库里才沿用，否则回落到标准清单的第一条
-    if (res.project.standard_id && standards.value.some((s) => s.id === res.project.standard_id)) {
-      stdId.value = res.project.standard_id
+    // 沿用项目已存的标准：它可能是 standards.id（新建项目页选的就是它），
+    // 也可能是本清单的 estimation_parameters.standard_id —— 两种都试，否则会悄悄回落到第一条。
+    const saved = res.project.standard_id
+    if (saved) {
+      const hit = standards.value.find((s) => s.id === saved || s.stdId === saved || s.code === saved)
+      if (hit) stdId.value = hit.id
     }
     // 文本预览
     if (res.project.document_path || res.project.raw_text) {
@@ -236,6 +260,8 @@ function hydrate(rows: any[]): any[] {
     ...r,
     _key: r._key || newKey(),
     level: [1, 2, 3, 4].includes(Number(r.level)) ? Number(r.level) : 4,
+    // 老数据没有 ftr 列（复杂度判定用），补 0，避免判定时拿到 undefined
+    ftr: Number(r.ftr) || 0,
   }))
   const idToKey = new Map<any, string>(list.map((r: any) => [r.id, r._key]))
   return list.map((r) => ({
@@ -255,6 +281,7 @@ const addModuleRow = (level: number) => {
     complexity: '中',
     ret: 0,
     det: 0,
+    ftr: 0,
     ufp: 0,
     note: '',
     source: 'manual'
@@ -262,7 +289,7 @@ const addModuleRow = (level: number) => {
 }
 
 const addManualRow = () => {
-  editableFps.value.push({
+  const row: any = {
     _key: newKey(),
     level: 4,
     parentKey: null,
@@ -271,10 +298,14 @@ const addManualRow = () => {
     complexity: '中',
     ret: 0,
     det: 0,
-    ufp: 10,
+    ftr: 0,
+    ufp: 0,
     note: '',
     source: 'manual'
-  })
+  }
+  // ⚠️ 不写死 ufp=10 —— 权值来自库里的功能点方法，按类型/复杂度现算
+  recomputeRow(row, true)
+  editableFps.value.push(row)
 }
 
 // 在指定模块下插入子节点（只有 1~3 级模块可加子级）
@@ -285,7 +316,7 @@ const addChildRow = (parent: any) => {
   const idx = editableFps.value.findIndex((r) => r._key === parent._key)
   if (idx < 0) return
   const isLeaf = childLevel === 4
-  editableFps.value.splice(idx + 1, 0, {
+  const row: any = {
     _key: newKey(),
     level: childLevel,
     parentKey: parent._key,
@@ -294,10 +325,13 @@ const addChildRow = (parent: any) => {
     complexity: '中',
     ret: 0,
     det: 0,
-    ufp: isLeaf ? 10 : 0,
+    ftr: 0,
+    ufp: 0,
     note: '',
     source: 'manual'
-  })
+  }
+  recomputeRow(row, true)
+  editableFps.value.splice(idx + 1, 0, row)
 }
 
 // 删除一行及其所有子孙
@@ -316,9 +350,24 @@ const removeRow = (row: any) => {
   editableFps.value = editableFps.value.filter((r) => !keys.has(r._key))
 }
 
-const recomputeRow = (fp: any) => {
+const recomputeRow = (fp: any, deriveComplexity = false) => {
   // 模块层级（1~3）不计自身 UFP，由子节点汇总
-  fp.ufp = Number(fp.level) === 4 ? computeUFP(fp.type, fp.complexity) : 0
+  if (Number(fp.level) !== 4) {
+    fp.ufp = 0
+    return
+  }
+  const p = activeUfp.value
+  if (!p) {
+    fp.ufp = 0
+    return
+  }
+  // 改了 RET / DET / FTR / 类型 → 按标准的判定矩阵重算复杂度（这才是复杂度的正确来源）。
+  // 直接在「复杂度」列上手动改：传 deriveComplexity=false，尊重人工选择。
+  if (deriveComplexity) {
+    const c = classifyComplexity(p.rules, fp.type, Number(fp.ret) || 0, Number(fp.det) || 0, Number(fp.ftr) || 0)
+    if (c) fp.complexity = c
+  }
+  fp.ufp = ufpWeightOf(p, fp.type, fp.complexity) ?? 0
 }
 
 // 父节点 UFP = 子孙中「功能点层（level 4）」之和
@@ -392,12 +441,17 @@ const loadStandards = async () => {
     const res: any = await api('/api/pricing-standards')
     standards.value = res.standards || []
     cities.value = res.cities || []
+    // 功能点方法库 / 复杂度判定矩阵：全局默认那份（各标准自己声明了会用标准那份）
+    ufpDefaults.value = res.ufpDefaults || null
     if (!stdId.value && standards.value.length) {
       stdId.value = (standards.value.find((s: any) => s.usable) || standards.value[0]).id
     }
+    // 库里的权值可能已被改动 → 用最新权值重算一遍 UFP（不重判复杂度，尊重人工选择）
+    editableFps.value.forEach((r) => recomputeRow(r, false))
   } catch {
     standards.value = []
     cities.value = []
+    ufpDefaults.value = null
   }
 }
 
@@ -463,6 +517,11 @@ onMounted(async () => {
             一~三级为模块层级（UFP 由下级自动汇总，不重复计入合计），四级为功能点（按类型与复杂度计算 UFP）。
             在模块行点「+子级」可继续下钻。
           </p>
+          <p v-if="activeUfp" class="mb-3 text-xs text-gray-400">
+            功能点方法：<span class="text-gray-600">{{ activeUfp.methodLabel }}</span>
+            <span class="ml-1">（方法来源：{{ activeUfp.methodSource }}，复杂度判定矩阵来源：{{ activeUfp.rulesSource }}）</span>
+            <span class="ml-1">复杂度由 RET / DET / FTR 按标准矩阵自动判定，也可在「复杂度」列手动改。</span>
+          </p>
 
           <div v-if="editableFps.length === 0" class="py-10 text-center text-sm text-gray-400">
             暂无功能点。上传需求后点击「AI 识别功能点」，或手动添加。
@@ -474,9 +533,10 @@ onMounted(async () => {
                   <th class="px-2 py-2">名称 / 模块</th>
                   <th class="px-2 py-2">层级</th>
                   <th class="px-2 py-2">类型</th>
-                  <th class="px-2 py-2">复杂度</th>
                   <th class="px-2 py-2">RET</th>
                   <th class="px-2 py-2">DET</th>
+                  <th class="px-2 py-2" title="引用文件类型数：EI/EO/EQ 的复杂度按 FTR × DET 判定">FTR</th>
+                  <th class="px-2 py-2" title="按标准矩阵由 RET / DET / FTR 自动判定，也可手动改">复杂度</th>
                   <th class="px-2 py-2">UFP</th>
                   <th class="px-2 py-2">操作</th>
                 </tr>
@@ -499,7 +559,7 @@ onMounted(async () => {
                     </div>
                   </td>
                   <td class="px-2 py-2">
-                    <select v-model.number="fp.level" class="rounded border border-gray-200 px-1.5 py-1 text-xs" @change="recomputeRow(fp)">
+                    <select v-model.number="fp.level" class="rounded border border-gray-200 px-1.5 py-1 text-xs" @change="recomputeRow(fp, true)">
                       <option :value="1">一级</option>
                       <option :value="2">二级</option>
                       <option :value="3">三级</option>
@@ -507,23 +567,48 @@ onMounted(async () => {
                     </select>
                   </td>
                   <td class="px-2 py-2">
-                    <select v-if="Number(fp.level) === 4" v-model="fp.type" class="rounded border border-gray-200 px-2 py-1 text-xs" @change="recomputeRow(fp)">
+                    <select v-if="Number(fp.level) === 4" v-model="fp.type" class="rounded border border-gray-200 px-2 py-1 text-xs" @change="recomputeRow(fp, true)">
                       <option v-for="t in ['ILF','EIF','EI','EO','EQ']" :key="t" :value="t">{{ t }}</option>
                     </select>
                     <span v-else class="text-xs text-gray-400">—</span>
                   </td>
                   <td class="px-2 py-2">
-                    <select v-if="Number(fp.level) === 4" v-model="fp.complexity" class="rounded border border-gray-200 px-2 py-1 text-xs" @change="recomputeRow(fp)">
+                    <input
+                      v-if="Number(fp.level) === 4"
+                      v-model.number="fp.ret"
+                      type="number"
+                      class="w-14 rounded border border-gray-200 px-2 py-1 text-xs"
+                      :title="fp.type === 'ILF' || fp.type === 'EIF' ? '记录元素类型数（复杂度按 RET × DET 判定）' : 'ILF/EIF 才用 RET'"
+                      @change="recomputeRow(fp, true)"
+                    />
+                    <span v-else class="text-xs text-gray-400">—</span>
+                  </td>
+                  <td class="px-2 py-2">
+                    <input
+                      v-if="Number(fp.level) === 4"
+                      v-model.number="fp.det"
+                      type="number"
+                      class="w-14 rounded border border-gray-200 px-2 py-1 text-xs"
+                      title="数据元素类型数"
+                      @change="recomputeRow(fp, true)"
+                    />
+                    <span v-else class="text-xs text-gray-400">—</span>
+                  </td>
+                  <td class="px-2 py-2">
+                    <input
+                      v-if="Number(fp.level) === 4"
+                      v-model.number="fp.ftr"
+                      type="number"
+                      class="w-14 rounded border border-gray-200 px-2 py-1 text-xs"
+                      :title="fp.type === 'ILF' || fp.type === 'EIF' ? 'ILF/EIF 不用 FTR' : '引用文件类型数（复杂度按 FTR × DET 判定）'"
+                      @change="recomputeRow(fp, true)"
+                    />
+                    <span v-else class="text-xs text-gray-400">—</span>
+                  </td>
+                  <td class="px-2 py-2">
+                    <select v-if="Number(fp.level) === 4" v-model="fp.complexity" class="rounded border border-gray-200 px-2 py-1 text-xs" @change="recomputeRow(fp, false)">
                       <option v-for="c in ['低','中','高']" :key="c" :value="c">{{ c }}</option>
                     </select>
-                    <span v-else class="text-xs text-gray-400">—</span>
-                  </td>
-                  <td class="px-2 py-2">
-                    <input v-if="Number(fp.level) === 4" v-model.number="fp.ret" type="number" class="w-14 rounded border border-gray-200 px-2 py-1 text-xs" />
-                    <span v-else class="text-xs text-gray-400">—</span>
-                  </td>
-                  <td class="px-2 py-2">
-                    <input v-if="Number(fp.level) === 4" v-model.number="fp.det" type="number" class="w-14 rounded border border-gray-200 px-2 py-1 text-xs" />
                     <span v-else class="text-xs text-gray-400">—</span>
                   </td>
                   <td class="px-2 py-2 font-semibold" :class="Number(fp.level) === 4 ? 'text-primary' : 'text-gray-700'">

@@ -150,8 +150,11 @@ export async function listRows(
   const page = Math.max(1, opts.page || 1)
   const pageSize = Math.min(500, Math.max(1, opts.pageSize || 50))
   const total = Number((await db.prepare(`SELECT COUNT(*)::int AS c FROM "${key}"`).get() as any).c)
+  // ⚠️ 排序键必须用注册表里声明的主键，不能写死 id ——
+  //    本后台支持 TEXT 主键 / 非 id 主键的表（如以业务键为主键），写死 id 会直接 500。
+  const orderBy = getTableConf(key)?.pk || 'id'
   const rows = await db
-    .prepare(`SELECT * FROM "${key}" ORDER BY id LIMIT ? OFFSET ?`)
+    .prepare(`SELECT * FROM "${key}" ORDER BY "${orderBy}" LIMIT ? OFFSET ?`)
     .all(pageSize, (page - 1) * pageSize)
   return { columns, rows, total, page, pageSize }
 }

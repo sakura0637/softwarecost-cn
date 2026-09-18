@@ -1,21 +1,12 @@
 // 计价基础工具
-// 注意：本文件不再内置任何「示例单价」。各标准的 hm / rate / pdr 一律从数据库读取，
-//      统一由 server/utils/pricingStandards.ts 的 buildPricingStandards() 提供。
-
-// IFPUG/NESMA 未调整功能点(UFP)权重
-export const UFP_WEIGHT: Record<string, Record<string, number>> = {
-  ILF: { 低: 7, 中: 10, 高: 15 },
-  EIF: { 低: 5, 中: 7, 高: 10 },
-  EI: { 低: 3, 中: 4, 高: 6 },
-  EO: { 低: 4, 中: 5, 高: 7 },
-  EQ: { 低: 3, 中: 4, 高: 6 },
-}
-
-export function computeUFP(type: string, complexity: string): number {
-  const t = (type || '').toUpperCase()
-  const c = complexity === '高' ? '高' : complexity === '低' ? '低' : '中'
-  return UFP_WEIGHT[t]?.[c] ?? 0
-}
+//
+// ⚠️ 本文件不允许再出现任何「领域参数」字面量（UFP 权值、复杂度判定矩阵、兜底 hm/pdr、省份映射…）。
+//    这些一律从数据库读，唯一取数出口是 server/utils/pricingParams.ts。
+//    这里只保留纯数学推导，以及类型定义。
+//
+// 历史教训：UFP 权值曾在 pages/projects/[id].vue 与本文件各硬编码一份，
+//   而「标准基准取值」表里又存了第三份（数值恰好相同，因为都源自 IFPUG 国际标准），
+//   导致「在表里改权重完全不生效」却看不出问题。现在只有库里那一份算数。
 
 export interface PricingParams {
   hm: number // 人月折算系数（人时/人月）

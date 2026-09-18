@@ -1,6 +1,7 @@
 import db from '../../../utils/db'
 import { getAuthUser } from '../../../utils/auth'
-import { computeUFP } from '../../../utils/pricing'
+import { resolveUfpProfile } from '../../../utils/pricingParams'
+import { classifyComplexity, ufpWeightOf } from '@/shared/ufp'
 import { createError } from 'h3'
 
 function cleanJSON(text: string): any {
@@ -37,14 +38,19 @@ export default defineEventHandler(async (event) => {
 请根据以下软件需求描述，识别所有功能点，并严格只输出一个 JSON 对象（不要任何解释、不要 markdown 代码块）：
 {
   "functionPoints": [
-    {"name":"功能项名称","type":"ILF|EIF|EI|EO|EQ","complexity":"低|中|高","ret":<整数>,"det":<整数>,"note":"简要说明"}
+    {"name":"功能项名称","type":"ILF|EIF|EI|EO|EQ","ret":<整数>,"det":<整数>,"ftr":<整数>,"note":"简要说明"}
   ]
 }
 要求：
 1. type 必须是 ILF、EIF、EI、EO、EQ 之一
-2. 若是 ILF/EIF，ret 为记录元素类型(RET)数、det 为数据元素类型(DET)数；若是 EI/EO/EQ，det 为 DET 数、ret 填 0
-3. complexity 依据业务规模判断为 低/中/高
-4. 仅输出上述 JSON，不要多余文字
+2. ret（记录元素类型数 RET）与 det（数据元素类型数 DET）都要尽量如实估计：
+   - ILF/EIF：ret 为该逻辑文件的记录元素类型数，det 为数据元素类型数
+   - EI/EO/EQ：det 为数据元素类型数，ret 填 0
+3. ftr（引用文件类型数 FTR）只对 EI/EO/EQ 有意义：本次事务读写了几个内部逻辑文件/外部接口文件；
+   ILF/EIF 的 ftr 填 0
+4. 不要输出 complexity（复杂度）字段 —— 复杂度由系统按 RET / DET / FTR 查标准矩阵自动判定，
+   你只需要把 ret / det / ftr 三个计数数准，数不准会直接导致功能点数错。
+5. 仅输出上述 JSON，不要多余文字
 
 需求描述：
 ${rawText.slice(0, 12000)}`
@@ -84,26 +90,36 @@ ${rawText.slice(0, 12000)}`
     throw createError({ statusCode: 502, statusMessage: 'AI 未识别出任何功能点' })
   }
 
+  // 功能点方法与复杂度判定矩阵：按项目所选标准从库中解析（接口层的唯一取数出口）
+  const profile = await resolveUfpProfile((project as any).standard_id)
+
   // 清空旧识别结果，写入新结果
   await db.prepare('DELETE FROM function_points WHERE project_id = ?').run(id)
   const ins = db.prepare(
-    'INSERT INTO function_points (project_id, seq, name, type, complexity, ret, det, ufp, note, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO function_points (project_id, seq, name, type, complexity, ret, det, ftr, ufp, note, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
   )
+  const unweighted = new Set<string>()
   await db.transaction(async () => {
     for (let i = 0; i < fps.length; i++) {
       const fp = fps[i]
       const type = String(fp.type || '').toUpperCase()
-      const complexity = ['低', '中', '高'].includes(fp.complexity) ? fp.complexity : '中'
-      const ufp = computeUFP(type, complexity)
+      const ret = Number(fp.ret) || 0
+      const det = Number(fp.det) || 0
+      const ftr = Number(fp.ftr) || 0
+      // ⚠️ 复杂度不再由 AI 拍脑袋，改由 RET/DET/FTR 查标准矩阵判定（判定不出来才退回'中'）
+      const complexity = classifyComplexity(profile.rules, type, ret, det, ftr) ?? '中'
+      const w = ufpWeightOf(profile, type, complexity)
+      if (w == null) unweighted.add(type)
       await ins.run(
         id,
         i + 1,
         String(fp.name || '未命名功能项').slice(0, 255),
         type,
         complexity,
-        Number(fp.ret) || 0,
-        Number(fp.det) || 0,
-        ufp,
+        ret,
+        det,
+        ftr,
+        w ?? 0,
         String(fp.note || '').slice(0, 1000),
         'ai'
       )
@@ -112,5 +128,18 @@ ${rawText.slice(0, 12000)}`
 
   await db.prepare("UPDATE projects SET status = 'analyzed', updated_at = now() WHERE id = ?").run(id)
 
-  return { ok: true, count: fps.length, functionPoints: await db.prepare('SELECT * FROM function_points WHERE project_id = ? ORDER BY seq').all(id) }
+  return {
+    ok: true,
+    count: fps.length,
+    // 让调用方知道这次用的是哪套算法，以及有没有「该类型在这套算法里没有权值」的情况
+    ufp: {
+      method: profile.method,
+      methodLabel: profile.methodLabel,
+      methodSource: profile.methodSource,
+      rulesSource: profile.rulesSource,
+      standardId: profile.standardId,
+      unweightedTypes: [...unweighted],
+    },
+    functionPoints: await db.prepare('SELECT * FROM function_points WHERE project_id = ? ORDER BY seq').all(id),
+  }
 })

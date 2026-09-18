@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url'
 import { standards } from '../composables/useStandards'
 import { estimationBenchmarks, provincialPricing } from '../server/seed/estimationData'
 import { cityRates, estimationParameters } from '../server/seed/parameterData'
+import { pricingDefaults } from '../server/seed/pricingDefaults'
 import {
   omWageBases, omFactors, omRateItems, omC1Benchmarks,
   omQuotaItems, omStationTypes, omDeviceC1Maps,
@@ -43,6 +44,7 @@ const seedRows: Record<string, Record<string, any>[]> = {
   provincial_pricing: provincialPricing as any,
   city_rates: cityRates as any,
   estimation_parameters: estimationParameters as any,
+  pricing_defaults: pricingDefaults as any,
   om_wage_base: omWageBases as any,
   om_factors: omFactors as any,
   om_rate_items: omRateItems as any,

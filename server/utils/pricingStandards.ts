@@ -1,4 +1,5 @@
 import db from './db'
+import { loadBindings, profileFrom, type UfpProfile } from './pricingParams'
 
 // 统一「计价标准档位」构建器：把 estimation_parameters 里各标准抽成可直接用于测算的档位。
 // 被 /api/pricing-standards 与 /api/projects/[id]/calculate 共用，避免两处各写一份。
@@ -41,6 +42,33 @@ export interface PricingStandard {
   filled: string[]
   paramCount: number
   source: string
+  /** 该标准在「造价标准」主表里的 id（standards.id）；解析不到为 null。
+   *  用途：新建项目页选的是 standards.id，而本清单的 id 是 estimation_parameters.standard_id，
+   *  两者不是一套命名 —— 靠本字段桥接，否则项目选定的标准在测算时匹配不上。 */
+  stdId: string | null
+  /** 本标准采用的功能点方法与复杂度判定矩阵（standard_benchmarks 声明 → 回落全局默认）。
+   *  weights / rules 只在「该标准自己声明了、与全局默认不同」时才随行下发，避免重复 25 份矩阵。 */
+  ufp: UfpBrief
+}
+
+export interface UfpBrief {
+  method: string
+  methodLabel: string
+  complexityBased: boolean
+  methodSource: string
+  rulesSource: string
+  standardId: string | null
+  weights?: UfpProfile['weights']
+  rules?: UfpProfile['rules']
+}
+
+/** 全局默认的功能点方法与其权值/矩阵（客户端按标准取用；标准自己声明了就用标准那份） */
+export interface UfpDefaults {
+  method: string
+  methodLabel: string
+  complexityBased: boolean
+  weights: UfpProfile['weights']
+  rules: UfpProfile['rules']
 }
 
 function num(v: any): number | null {
@@ -49,24 +77,11 @@ function num(v: any): number | null {
   return Number.isFinite(n) ? n : null
 }
 
-// 省会/代表城市：标准未给费率时，用该地城市费率补齐
-const PROVINCE_CITY: Record<string, string> = {
-  四川: '成都',
-  北京: '北京',
-  山东: '济南',
-  江西: '南昌',
-  河南: '郑州',
-  山西: '太原',
-  河北: '石家庄',
-  全国: '',
-}
-
-const FALLBACK_HM = 174 // 8h/天 × 21.75 天/月
-// 生产率兜底值按「开发 / 运维」分开，且仅在该标准确有生产率参数、只是没给数值时使用
-const FALLBACK_PDR_DEV = 6.72 // CSBMK 2025 全行业 P50（开发）
-const FALLBACK_PDR_MAINT = 1.07 // DB11/T 1424-2017 北京运维 P50（运维）
-// ⚠️ 两者不可混用：运维生产率比开发小一个数量级（0.74~1.07 vs 6.72~7.16 人时/FP）。
-//    把开发生产率套到运维标准上会算出荒谬的运维单价，务必按 category 区分。
+// ⚠️ 本文件不再硬编码任何兜底值/映射 —— 全部读 pricing_defaults（唯一取数出口见 pricingParams.ts）。
+//    历史：省会代表城市、兜底 HM、开发/运维兜底生产率曾写死在这里，改一次要发一次版；
+//    现在改「数据维护 → 全局兜底 → 全局测算兜底」即时生效。
+//    这两个兜底生产率仍不可混用：运维生产率比开发小一个数量级（0.74~1.07 vs 6.72~7.16 人时/FP），
+//    把开发生产率套到运维标准上会算出荒谬的运维单价，故按 category 分开取。
 
 function pickDefaultPdr(options: PdrOption[]): number | null {
   if (!options.length) return null
@@ -79,6 +94,10 @@ function pickDefaultPdr(options: PdrOption[]): number | null {
 }
 
 export async function buildPricingStandards() {
+  // 全局兜底参数 + 标准声明（功能点方法 / 复杂度矩阵）：一次读全，循环里不再查库
+  const ctx = await loadBindings()
+  const d = ctx.defaults
+
   // ⚠️ 必须过滤 is_active：本表是计价引擎唯一真正读取的参数表，
   // 而它同时也是数据维护后台里可被「停用」的表 —— 不过滤的话，后台那个开关就是个摆设，
   // 用户停用一条参数（如某个不适用的省标费率）却发现测算页照旧能选到它。
@@ -144,14 +163,14 @@ export async function buildPricingStandards() {
     let hm = num(parseValues(find((p) => p.param_name === '人月折算系数'))[0]?.factor)
     const filled: string[] = []
     if (hm == null) {
-      hm = FALLBACK_HM
-      filled.push(`hm 取通用值 ${FALLBACK_HM}（8h/天 × 21.75天/月）`)
+      hm = d.fallbackHm.value
+      filled.push(`hm 取全局兜底值 ${d.fallbackHm.value}（${d.fallbackHm.note}）`)
     }
 
     // ---- rate ----
-    // suggestedCity：该地区对应的代表城市。标准未给费率时用它补齐；
+    // suggestedCity：该地区对应的代表城市（来自「全局测算兜底」表的省份映射）。标准未给费率时用它补齐；
     // 即使标准自带费率，也一并返回，便于用户按城市重新取费（如四川标准改按成都价）。
-    const suggestedCity = PROVINCE_CITY[head.region] || ''
+    const suggestedCity = d.provinceCity[head.region] || ''
     let rate = num(
       parseValues(find((p) => p.param_name === '平均人力成本费率' || p.param_name === '基准人月费率'))[0]?.factor
     )
@@ -181,13 +200,10 @@ export async function buildPricingStandards() {
     let pdr: number | null = pickDefaultPdr(pdrOptions)
     if (pdr == null && hasProductivityParam) {
       // 标准有生产率参数、只是没给具体数值（如山东「按业务领域 P50 参考CSBMK」），
-      // 属于"明确指向外部基准"，按类别取对应兜底值是合理的。
-      pdr = category === '运维' ? FALLBACK_PDR_MAINT : FALLBACK_PDR_DEV
-      filled.push(
-        category === '运维'
-          ? `pdr 取北京运维标准 P50 = ${FALLBACK_PDR_MAINT} 人时/FP`
-          : `pdr 取 CSBMK 2025 全行业 P50 = ${FALLBACK_PDR_DEV} 人时/FP`
-      )
+      // 属于"明确指向外部基准"，按类别取对应兜底值是合理的（兜底值来自「全局测算兜底」表）。
+      const fb = category === '运维' ? d.fallbackPdr.maintenance : d.fallbackPdr.development
+      pdr = fb.value
+      filled.push(`pdr 取${fb.note || '全局兜底值'} = ${fb.value} 人时/FP`)
     }
     // 完全没有生产率参数的标准（GB/T 36964、GB/T 28827.7、DB14/T 2163 等方法/因子标准）
     // 保持 pdr=null 并计入 missing —— 不做兜底，否则会伪装成可测算、算出无意义的结果。
@@ -224,6 +240,24 @@ export async function buildPricingStandards() {
       fpPrice = Math.round((rate * pdr) / hm)
     }
 
+    // ---- 功能点方法与复杂度判定矩阵（标准声明 → 回落全局默认）----
+    const prof = profileFrom(ctx, sid)
+    const ufp: UfpBrief = {
+      method: prof.method,
+      methodLabel: prof.methodLabel,
+      complexityBased: prof.complexityBased,
+      methodSource: prof.methodSource,
+      rulesSource: prof.rulesSource,
+      standardId: prof.standardId,
+    }
+    // 只有「该标准自己声明了、与全局默认不同」时才随行下发实体，避免每行重复 25 份矩阵
+    if (prof.methodSource === '标准声明') ufp.weights = prof.weights
+    if (prof.rulesSource === '标准声明') ufp.rules = prof.rules
+    if (prof.methodSource === '全局默认' && prof.rulesSource === '全局默认' && !prof.standardId) {
+      // 既没声明、又没关联到标准主库：不是错误，但要在 filled 里说清用的是哪套默认
+      filled.push(`功能点方法取全局默认「${prof.methodLabel}」`)
+    }
+
     standards.push({
       id: sid,
       name: head.standard_name,
@@ -249,6 +283,8 @@ export async function buildPricingStandards() {
       filled,
       paramCount: items.length,
       source: head.standard_code || head.standard_name,
+      stdId: prof.standardId,
+      ufp,
     })
   }
 
@@ -259,5 +295,17 @@ export async function buildPricingStandards() {
     return a.id.localeCompare(b.id)
   })
 
-  return { standards, cities: [...citySet.values()].sort((a, b) => (b.development || 0) - (a.development || 0)) }
+  const defMethod = d.ufpLibrary.methods[d.ufpLibrary.default]
+  return {
+    standards,
+    cities: [...citySet.values()].sort((a, b) => (b.development || 0) - (a.development || 0)),
+    // 全局默认的功能点方法与其权值 / 判定矩阵：客户端按选中的标准取用
+    ufpDefaults: {
+      method: d.ufpLibrary.default,
+      methodLabel: defMethod.label,
+      complexityBased: defMethod.complexityBased,
+      weights: defMethod.weights,
+      rules: d.complexityRules,
+    } as UfpDefaults,
+  }
 }

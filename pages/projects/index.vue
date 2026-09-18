@@ -9,15 +9,31 @@ const showNew = ref(false)
 const newName = ref('')
 const newDesc = ref('')
 const newMethod = ref('ifpug')
-const newStandard = ref('hebei')
+// ⚠️ 标准必须从 standards 表实时拉取，不能写死。
+//    历史问题：这里曾硬编码 gb-t-36964 / hebei / beijing / sichuan 四个选项，
+//    而 standards 表里 25 个标准没有一个叫 hebei（河北实际是 hb-eb40），
+//    beijing / sichuan 也对不上（真身是 bj-db11-1010 / sc-t-0015）——
+//    结果新建项目选完标准，后续根本找不到对应参数。
+const newStandard = ref('')
+const stdOptions = ref<{ id: string; name: string }[]>([])
+const stdLoading = ref(false)
 const creating = ref(false)
 
-const stdOptions = [
-  { id: 'gb-t-36964', name: 'GB/T 36964（国标）' },
-  { id: 'hebei', name: '河北省信息化预算标准' },
-  { id: 'beijing', name: '北京市' },
-  { id: 'sichuan', name: '四川省' },
-]
+const loadStdOptions = async () => {
+  stdLoading.value = true
+  try {
+    const res: any = await api('/api/standards')
+    stdOptions.value = (res.standards || []).map((s: any) => ({
+      id: s.id,
+      name: s.code ? `${s.name}（${s.code}）` : s.name,
+    }))
+    if (!newStandard.value && stdOptions.value.length) newStandard.value = stdOptions.value[0].id
+  } catch {
+    stdOptions.value = []
+  } finally {
+    stdLoading.value = false
+  }
+}
 
 const statusText: Record<string, string> = {
   draft: '草稿',
@@ -37,6 +53,10 @@ const load = async () => {
 
 const createProject = async () => {
   if (!newName.value.trim()) return
+  if (!newStandard.value) {
+    alert('请先选择计价标准（标准清单从标准库读取，若为空请到「数据维护 → 造价标准」检查）')
+    return
+  }
   creating.value = true
   try {
     await api('/api/projects', {
@@ -63,7 +83,9 @@ const removeProject = async (id: number) => {
   await load()
 }
 
-onMounted(load)
+onMounted(async () => {
+  await Promise.all([load(), loadStdOptions()])
+})
 </script>
 
 <template>
@@ -98,9 +120,16 @@ onMounted(load)
           </div>
           <div class="mb-6">
             <label class="mb-1.5 block text-sm font-medium text-gray-700">计价标准</label>
-            <select v-model="newStandard" class="w-full rounded-lg border border-gray-200 px-4 py-2.5 text-sm outline-none focus:border-primary">
+            <select
+              v-model="newStandard"
+              class="w-full rounded-lg border border-gray-200 px-4 py-2.5 text-sm outline-none focus:border-primary"
+              :disabled="stdLoading || !stdOptions.length"
+            >
+              <option v-if="stdLoading" value="">标准库加载中…</option>
+              <option v-else-if="!stdOptions.length" value="">标准库为空，请先到「数据维护 → 造价标准」添加</option>
               <option v-for="s in stdOptions" :key="s.id" :value="s.id">{{ s.name }}</option>
             </select>
+            <p class="mt-1 text-xs text-gray-400">清单来自标准库（共 {{ stdOptions.length }} 项），选定后该项目的功能点方法与复杂度判定规则都按这份标准执行。</p>
           </div>
           <div class="flex gap-3">
             <button class="flex-1 rounded-lg border border-gray-200 py-2.5 text-sm font-medium text-gray-600" @click="showNew = false">取消</button>

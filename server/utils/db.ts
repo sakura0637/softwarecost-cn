@@ -9,6 +9,9 @@ import { standards } from '../../composables/useStandards'
 import { estimationBenchmarks, provincialPricing, standardRealParams } from '../seed/estimationData'
 // 城市费率时序 + 参数字典（从全部省标/国标原文精确抽取，驱动 /city、/parameters 页）
 import { cityRates, estimationParameters } from '../seed/parameterData'
+// 全局测算兜底参数（功能点方法库 / 复杂度判定矩阵 / 兜底 hm·pdr / 省份→城市）
+// —— 把原先写死在代码里的领域常量搬进库，改参数不再改代码
+import { pricingDefaults } from '../seed/pricingDefaults'
 import {
   OM_SEED_VERSION, omWageBases, omFactors, omRateItems,
   omC1Benchmarks, omQuotaItems, omStationTypes, omDeviceC1Maps,
@@ -199,6 +202,9 @@ CREATE TABLE IF NOT EXISTS function_points (
 -- 兼容旧库：存量行默认 level=4（功能点）、parent_id 为空，行为与升级前完全一致
 ALTER TABLE function_points ADD COLUMN IF NOT EXISTS level INTEGER NOT NULL DEFAULT 4;
 ALTER TABLE function_points ADD COLUMN IF NOT EXISTS parent_id INTEGER;
+-- 复杂度判定所需的 FTR（引用文件类型数）：
+-- ILF/EIF 用 RET × DET 判定，EI/EO/EQ 用 FTR × DET 判定（后者原先根本没有这一列，只能靠 AI 拍脑袋）。
+ALTER TABLE function_points ADD COLUMN IF NOT EXISTS ftr INTEGER NOT NULL DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_id);
 CREATE INDEX IF NOT EXISTS idx_fp_project    ON function_points(project_id);
@@ -386,6 +392,14 @@ CREATE TABLE IF NOT EXISTS standard_benchmarks (
   updated_at         TIMESTAMPTZ DEFAULT now()
 );
 
+-- 标准驱动（算法层）：本行声明「这套标准怎么算」，而不是把算法写死在代码里。
+-- algorithm：功能点方法代号，指向 pricing_defaults['ufp_methods'] 里的键
+--            （ifpug-ufp 详细功能点法 / rapid-ufp 快速功能点法 / full-ufp 全功能点法）。
+--            为空 = 用全局默认方法，不报错。
+-- complexity_rules：本标准的复杂度判定矩阵（RET/DET/FTR → 低/中/高）。为空 = 用全局默认矩阵。
+ALTER TABLE standard_benchmarks ADD COLUMN IF NOT EXISTS algorithm TEXT;
+ALTER TABLE standard_benchmarks ADD COLUMN IF NOT EXISTS complexity_rules TEXT;
+
 -- 标准参数明细（1:N 从表，行式）：取代 estimation_parameters 与 standards.params JSON 列
 CREATE TABLE IF NOT EXISTS standard_parameters (
   id              SERIAL PRIMARY KEY,
@@ -401,6 +415,19 @@ CREATE TABLE IF NOT EXISTS standard_parameters (
   updated_at      TIMESTAMPTZ DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_sp_std ON standard_parameters(standard_id);
+
+-- 全局测算兜底表（标准没给参数时用它顶上）+ 国际/国标通用取值。
+-- 存在的意义：把「写在代码里的领域常量」全部搬进可维护、可审计的表。
+-- key 示例：ufp_methods / complexity_rules / fallback_hm / fallback_pdr / province_city
+-- ⚠️ value 一律存 JSON 文本；界面须明说「用的是默认值」，绝不静默兜底。
+CREATE TABLE IF NOT EXISTS pricing_defaults (
+  id         SERIAL PRIMARY KEY,
+  key        TEXT NOT NULL UNIQUE,
+  value      TEXT,
+  label      TEXT,
+  note       TEXT,
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
 
 CREATE TABLE IF NOT EXISTS estimation_benchmarks (
   id TEXT PRIMARY KEY,
@@ -845,6 +872,29 @@ CREATE TABLE IF NOT EXISTS kv (
       )
     }
     console.log(`[seed] estimation_parameters 已灌 ${estimationParameters.length} 条`)
+  }
+
+  // 4.6) 全局测算兜底参数（pricing_defaults）：把原先写死在代码里的领域常量搬进库。
+  //      写入策略＝按 key「缺则补、有则留」：
+  //        · 新增 key 随部署自动补上；
+  //        · 已存在的 key 保留（后台人工改过的值不会被部署覆盖）。
+  //      这是有意为之 —— 这几行是「参数」而非「代码」，覆盖会抹掉主人的调整。
+  //      确需修正某个已发布的值时，走一次性迁移脚本显式改库，别靠重灌。
+  {
+    const existing = new Set(
+      (await pool.query('SELECT "key" FROM pricing_defaults')).rows.map((r: any) => String(r.key))
+    )
+    let added = 0
+    for (const d of pricingDefaults) {
+      if (existing.has(d.key)) continue
+      await pool.query(
+        `INSERT INTO pricing_defaults ("key", "value", label, note)
+         VALUES ($1,$2,$3,$4) ON CONFLICT ("key") DO NOTHING`,
+        [d.key, JSON.stringify(d.value), d.label, d.note]
+      )
+      added++
+    }
+    if (added) console.log(`[seed] pricing_defaults 已补 ${added} 个键（共 ${pricingDefaults.length} 个，原有保留）`)
   }
 
 

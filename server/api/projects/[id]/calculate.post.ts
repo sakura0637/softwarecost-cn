@@ -36,8 +36,13 @@ export default defineEventHandler(async (event) => {
   if (!standards.length) throw createError({ statusCode: 400, statusMessage: '无可用计价标准' })
 
   const standardId = body.standardId || body.standard || project.standard_id || ''
+  // 项目里存的标准可能是 standards.id（新建项目页从标准库选的就是它），
+  // 而本清单的 id 是 estimation_parameters.standard_id —— 两套命名，必须都试：
+  //   ① 直接匹配清单 id  ② 匹配桥接字段 stdId（standards.id）  ③ 匹配标准代号
   const std =
     standards.find((s) => s.id === standardId) ||
+    standards.find((s) => s.stdId && s.stdId === standardId) ||
+    standards.find((s) => s.code && s.code === standardId) ||
     standards.find((s) => s.complete) ||
     standards.find((s) => s.usable) ||
     standards[0]
