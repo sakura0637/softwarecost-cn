@@ -155,6 +155,22 @@ for (const k of declaredKeys) {
 results.push(['登记为「不参与计算」的列名在 db.ts 里真实存在', badInertCol.length === 0,
   badInertCol.length ? badInertCol.join(', ') : `${declaredKeys.reduce((n, k) => n + (TABLE_CALC_ROLES[k].inert?.length || 0), 0)} 个列名已核对`])
 
+// 分组列的两道护栏。
+// ① 列名必须真实存在：拼错列名不会抛错 —— groupBy 取的每一行都是 undefined，
+//    所有行会挤进同一个空组，页面只剩一条「（未填写）」组头，静默退化成平铺，极难发现。
+// ② 必须同时 hidden：组头已经把该值写在明处，行里再重复一遍纯属噪音（这正是这轮要治的病）。
+const badGroupCol: string[] = []
+const groupNotHidden: string[] = []
+const groupedTables = DATA_TABLES.filter((t) => t.groupBy)
+for (const t of groupedTables) {
+  if (!dbCols[t.key]?.has(t.groupBy!)) badGroupCol.push(`${t.key}.groupBy=${t.groupBy}（db.ts 里没这列）`)
+  if (!(t.hidden || []).includes(t.groupBy!)) groupNotHidden.push(`${t.key}.groupBy=${t.groupBy}`)
+}
+results.push(['groupBy 指向的列在 db.ts 里真实存在', badGroupCol.length === 0,
+  badGroupCol.length ? badGroupCol.join(', ') : `${groupedTables.length} 张分组表的列名已核对`])
+results.push(['分组列已从列表里隐藏（组头已写明该值）', groupNotHidden.length === 0,
+  groupNotHidden.length ? `未隐藏：${groupNotHidden.join(', ')}` : '分组列均已 hidden，不再逐行重复'])
+
 // 最关键的一条：登记了「不参与计算」的列，hint 里必须开一个小节（【…】标题）点名交代，
 // 否则用户看到「启用 / 适用引擎」这种开关列，会以为改了有用。
 // ⚠️ 必须限定在【…】小标题里，不能全篇搜 —— 否则一句顺带的「对比：费率项表的取值类型列」

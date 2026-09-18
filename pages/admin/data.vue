@@ -81,33 +81,77 @@ function fkLabel(col: string, val: any): string {
   const hit = opts.find((o) => String(o.value) === String(val))
   return hit ? hit.label : String(val ?? '')
 }
-// JSON 列不展示原文（避免代码感），只显示项数摘要；编辑时才展开
-function jsonCount(val: any): number {
-  try {
-    const o = typeof val === 'string' ? JSON.parse(val) : val
-    if (Array.isArray(o)) return o.length
-    if (o && typeof o === 'object') return Object.keys(o).length
-    return 0
-  } catch {
-    return 0
+// ── JSON 列的列表显示 ──
+// 原则：这一列的值常常就是「这张表存在的理由」（如参数取值 174 / 20000 元）。
+// 早期一律显示「共 N 项」，等于把主角藏起来 —— 想看一个值要点一次「编辑」，一屏十八行看十八次。
+// 现在：短的直出，多项的取前几个以 … 收尾，悬停看全（title 给 jsonFullText）。
+function parseJson(val: any): any {
+  if (typeof val === 'string') {
+    const s = val.trim()
+    if (!s) return null
+    try { return JSON.parse(s) } catch { return null }
   }
+  return val ?? null
+}
+function jsonCount(val: any): number {
+  const o = parseJson(val)
+  if (Array.isArray(o)) return o.length
+  if (o && typeof o === 'object') return Object.keys(o).length
+  return 0
+}
+/** 从一条JSON配置里抽出「值」：{label, factor} 取 factor；裸值取本身 */
+function jsonPart(it: any): string {
+  if (it && typeof it === 'object') {
+    const v = it.factor ?? it.value ?? it.label
+    return v === undefined || v === null ? '' : String(v)
+  }
+  return it === null || it === undefined ? '' : String(it)
+}
+/** 列表摘要：最多 3 项（对象最多 2 对键值），超出以 … 收尾 */
+function jsonSummary(val: any): string {
+  const o = parseJson(val)
+  if (o === null) return '—'
+  if (Array.isArray(o)) {
+    const parts = o.map(jsonPart).filter((s) => s !== '')
+    if (!parts.length) return o.length ? `共 ${o.length} 项` : '—'
+    return parts.length > 3 ? `${parts.slice(0, 3).join(' · ')} …` : parts.join(' · ')
+  }
+  if (typeof o === 'object') {
+    const keys = Object.keys(o)
+    if (!keys.length) return '—'
+    const parts = keys.map((k) => `${k}: ${jsonPart(o[k])}`)
+    return parts.length > 2 ? `${parts.slice(0, 2).join(' · ')} …` : parts.join(' · ')
+  }
+  return String(o)
+}
+/** 悬停看全：不截断，逐项列出 */
+function jsonFullText(val: any): string {
+  const o = parseJson(val)
+  if (o === null) return ''
+  if (Array.isArray(o)) {
+    const parts = o.map(jsonPart).filter((s) => s !== '')
+    return parts.length ? parts.join(' · ') : `共 ${o.length} 项`
+  }
+  if (typeof o === 'object') return Object.keys(o).map((k) => `${k}: ${jsonPart(o[k])}`).join('\n')
+  return String(o)
+}
+/** 长文本列（说明 / 备注 等）：列一多就会被压成两三个汉字，给个下限宽度撑住 */
+function isLongTextCol(c: ColMeta): boolean {
+  return c.uiType === 'text' && ['summary', 'description', 'remark', 'note'].includes(c.name)
 }
 function displayVal(col: ColMeta, val: any): string {
   if (val === null || val === undefined || val === '') return '—'
   if (col.uiType === 'boolean') return val ? '是' : '否'
-  if (col.uiType === 'json') {
-    const n = jsonCount(val)
-    return n ? `共 ${n} 项` : '—'
-  }
+  if (col.uiType === 'json') return jsonSummary(val)
   if (col.uiType === 'date') return String(val).replace('T', ' ').slice(0, 16)
   // 枚举列渲染成中文（存的是 c1 / quota / ratio 这类编码，不给用户看原文）
   const en = enumFor(activeTable.value, col.name)
   if (en && en[String(val)] != null) return en[String(val)]
   const s = String(val)
-  // 兜底：文本列里存的 JSON 内容同样只显示摘要（防止配置漏标 json 的列露出原文）
+  // 兜底：文本列里存的 JSON 内容同样按摘要显示（防止配置漏标 json 的列露出原文）
   if (/^[[{]/.test(s.trim())) {
-    const n = jsonCount(s)
-    if (n) return `共 ${n} 项`
+    const sum = jsonSummary(s)
+    if (sum !== '—') return sum
   }
   return s
 }
@@ -166,20 +210,38 @@ function rowMuted(row: any): boolean {
   return isComputedRow(row) || row?.is_active === false
 }
 
-type RenderItem = { type: 'group'; key: string } | { type: 'row'; row: any }
-/** 渲染序列：有分组就先插一条分组表头，再铺该组的成员行（保持原顺序） */
+type GroupItem = { type: 'group'; key: string; count: number; declared: boolean }
+type RenderItem = GroupItem | { type: 'row'; row: any }
+/** 分组依据列（如「标准参数明细」按 standard_id 分组）——组名要拿它去翻中文 */
+const activeGroupCol = computed(() => columns.value.find((c) => c.name === activeGroupBy.value) || null)
+/** 组名：外键列翻成中文名；没填值时说人话，别留空白 */
+function groupTitleOf(key: string): string {
+  if (!key) return '（未填写）'
+  const c = activeGroupCol.value
+  if (c?.isFk) return fkLabel(c.name, key) || key
+  return key
+}
+/**
+ * 渲染序列：有分组就先插一条分组表头，再铺该组的成员行（保持原顺序）。
+ * declared 区分两种分组，因为它们的表头说的不是一回事：
+ *  - true  声明式分组（om_* 参数表）：组就是「引擎的一个取数单位」，表头要写明本组怎么进公式；
+ *  - false 普通列分组（如标准参数明细按所属标准）：纯阅读分层，表头报个组内条数即可。
+ */
 const renderList = computed<RenderItem[]>(() => {
   const col = activeGroupBy.value
   if (!col) return rows.value.map((row) => ({ type: 'row' as const, row }))
+  const declared = !!groupConf.value
   const out: RenderItem[] = []
-  const seen = new Map<string, RenderItem>()
+  const seen = new Map<string, GroupItem>()
   for (const row of rows.value) {
     const k = String(row[col] ?? '')
-    if (!seen.has(k)) {
-      const item: RenderItem = { type: 'group', key: k }
-      seen.set(k, item)
-      out.push(item)
+    let g = seen.get(k)
+    if (!g) {
+      g = { type: 'group', key: k, count: 0, declared }
+      seen.set(k, g)
+      out.push(g)
     }
+    g.count++
     out.push({ type: 'row', row })
   }
   return out
@@ -370,21 +432,30 @@ onMounted(loadMeta)
                 <template v-for="(it, i) in renderList" :key="it.type === 'row' ? it.row[primaryKey] : 'g-' + it.key + '-' + i">
                   <tr v-if="it.type === 'group'" class="border-t-2 border-gray-200 bg-gray-100/70">
                     <td :colspan="visibleColumns.length + 1" class="px-3 py-2">
-                      <div class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                      <!-- 声明式分组（om_* 参数表）：本组就是引擎的一个取数单位，必须说清怎么进公式 -->
+                      <div v-if="it.declared" class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
                         <span class="text-[13px] font-semibold text-gray-800">{{ declOf(it.key)?.name || it.key }}</span>
                         <code class="text-[11px] text-gray-400">{{ it.key }}</code>
                         <span class="rounded-full border px-2 py-0.5 text-[11px]" :class="roleToneOf(it.key)">{{ roleLabelOf(it.key) }}</span>
+                        <span class="text-[11px] text-gray-400">本页 {{ it.count }} 行</span>
                         <span v-if="declOf(it.key)?.note" class="w-full text-[11px] leading-relaxed text-gray-500">{{ declOf(it.key)?.note }}</span>
+                      </div>
+                      <!-- 普通列分组（如「标准参数明细」按所属标准分层）：纯阅读分层，报个条数即可 -->
+                      <div v-else class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                        <span class="text-[13px] font-semibold text-gray-800">{{ groupTitleOf(it.key) }}</span>
+                        <code v-if="groupTitleOf(it.key) !== it.key" class="text-[11px] text-gray-400">{{ it.key }}</code>
+                        <span class="rounded-full border border-gray-200 bg-white px-2 py-0.5 text-[11px] text-gray-500">本页 {{ it.count }} 条</span>
+                        <span v-if="activeGroupCol" class="w-full text-[11px] leading-relaxed text-gray-500">按「{{ activeGroupCol.label }}」分层：该值相同的行聚在一起；一页放不下时同一组会跨页续排</span>
                       </div>
                     </td>
                   </tr>
                   <tr v-else class="border-t border-gray-100" :class="rowMuted(it.row) ? 'bg-gray-50/70 text-gray-500' : 'bg-white hover:bg-gray-50'">
                     <td v-for="c in visibleColumns" :key="c.name" class="px-3 py-2 align-top">
-                      <span v-if="c.isFk" class="block max-w-[180px] truncate" :title="fkLabel(c.name, it.row[c.name])">{{ fkLabel(c.name, it.row[c.name]) }}</span>
+                      <span v-if="c.isFk" class="block max-w-[180px] min-w-[90px] truncate" :title="fkLabel(c.name, it.row[c.name])">{{ fkLabel(c.name, it.row[c.name]) }}</span>
                       <span
                         v-else-if="c.uiType === 'json'"
-                        class="block max-w-[110px] truncate rounded bg-gray-50 px-1.5 py-0.5 text-center text-xs text-gray-500"
-                        title="查看和修改配置明细请点「编辑」"
+                        class="block max-w-[230px] min-w-[80px] truncate rounded bg-gray-50 px-1.5 py-0.5 text-xs text-gray-600"
+                        :title="jsonFullText(it.row[c.name]) || '查看和修改配置明细请点「编辑」'"
                       >{{ displayVal(c, it.row[c.name]) }}</span>
                       <span
                         v-else-if="c.name === 'calc' && isComputedRow(it.row)"
@@ -393,7 +464,7 @@ onMounted(loadMeta)
                       <span v-else class="flex items-center gap-1">
                         <span
                           class="block max-w-[220px] truncate"
-                          :class="columnNote(activeTable, it.row, c.name) ? 'text-gray-400' : ''"
+                          :class="[isLongTextCol(c) ? 'min-w-[120px]' : '', columnNote(activeTable, it.row, c.name) ? 'text-gray-400' : '']"
                           :title="columnNote(activeTable, it.row, c.name)?.note || displayVal(c, it.row[c.name])"
                         >{{ displayVal(c, it.row[c.name]) }}</span>
                         <span
