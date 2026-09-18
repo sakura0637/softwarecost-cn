@@ -5,10 +5,12 @@
  *   复杂度判定规则更是压根不存在，只能让 AI 拍脑袋填复杂度。
  * 本次改造把领域参数全部搬进 pricing_defaults 表，本脚本负责把「搬对了」和「没回退」锁住。
  *
- * 断言分三类：
+ * 断言分四类：
  *   一、搬迁保真：种子里的值 == 改造前代码里的常量（逐个值比对，防抄错）
  *   二、算法自洽：复杂度矩阵结构合法、边界抽样判定正确、权值取用正确
  *   三、防回退：源码里不许再出现 UFP 权值 / 兜底值 字面量，前后端必须共用 shared/ufp.ts
+ *   四、取名即取数：引擎只认参数键（param_key），不再按中文名匹配取值 ——
+ *       含「搬迁保真」（改前按名命中的行都带对键）、「通道验证」、「防回退」与 db.ts 四步断言
  *
  * ⚠️ 本脚本是纯静态的（不连数据库）：它校验的是「种子 + 源码」——
  *    种子就是部署时写进库里的那份，源码就是运行时读它的那份，两头都锁住即可。
@@ -17,6 +19,9 @@ import { readFileSync, existsSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { pricingDefaults } from '../server/seed/pricingDefaults'
+import { estimationParameters } from '../server/seed/parameterData'
+import { PARAM_KEYS, PARAM_KEY_VALUES, PARAM_KEY_LABELS } from '../server/config/paramKeys'
+import { DATA_ENUMS } from '../server/config/dataTables'
 import {
   classifyComplexity, ufpWeightOf, validateComplexityRules, validateUfpMethods,
 } from '../shared/ufp'
@@ -34,6 +39,19 @@ function readSrc(rel: string): string {
   const p = findFile(rel)
   if (!p) throw new Error(`找不到文件 ${rel}`)
   return readFileSync(p, 'utf8')
+}
+
+/** 去掉整行注释（`//` / `/*` / `*` / `--`）后再做「有没有这段代码」的判断。
+ *  ⚠️ 反向验证时真踩到过这个空子：把一处 ALTER 注释掉，断言仍在**注释文本**里搜到了关键字，
+ *     于是「老库加列被删」这种真实退化被判成全绿 —— 松散匹配。注释掉的代码等于不存在。 */
+function stripComments(src: string): string {
+  return src
+    .split(/\r?\n/)
+    .filter((l) => {
+      const t = l.trim()
+      return !(t.startsWith('//') || t.startsWith('*') || t.startsWith('/*') || t.startsWith('--'))
+    })
+    .join('\n')
 }
 
 const results: [string, boolean, string][] = []
@@ -192,6 +210,125 @@ results.push(['AI 识别接口不再要求 AI 判定复杂度（改由矩阵判�
   `提示词已移除 complexity：${!/"complexity":/.test(analyzeSrc) ? '✓' : '✗'}；实际按 profile.rules 判定：${usesMatrix ? '✓' : '✗'}`])
 
 // ══ 输出 ══════════════════════════════════════════════════════════
+// ══ 四、取数不靠名字：引擎只认参数键 ═══════════════════════════════════
+// 由来（2026-09-18）：「配置真实性」第二轮。引擎原来按 param_name 的**中文名字面量**匹配取值
+// （find(p => p.param_name === '人月折算系数') / includes('应用类型') …），
+// 于是「后台改个中文名」＝「静默改行为」：匹配不到就掉兜底值。
+// 最坑的是兜底 HM(174) 恰好等于多数标准的取值 —— 失配被数值巧合掩盖得干干净净，
+// 只有北京 DB11/T 1010（176）会悄悄变 174，金额小改、不报错、不留痕。
+// 现在引擎只认 param_key（唯一事实源 server/config/paramKeys.ts），本段把两头锁住。
+// 一律在「去注释后」的源码上判断：注释掉的代码不算接线（反向验证踩过这个空子）。
+const engineSrc = stripComments(readSrc('server/utils/pricingStandards.ts'))
+const dbSrc = stripComments(readSrc('server/utils/db.ts'))
+
+// (1) 搬迁保真 —— 期望值是**独立于实现**的下界清单：
+//     照抄改造前源码里的匹配写法人工整理出「哪些中文名会被引擎命中、各自该得什么键」。
+//     漏一个 → 那个参数掉兜底值 → 金额变。这是本段最重要的一条。
+const WAS_NAME_MATCH: [string, string][] = [
+  ['人月折算系数', 'hm'],
+  ['平均人力成本费率', 'rate'],
+  ['基准人月费率', 'rate'],
+  ['应用类型调整因子', 'app_type_factor'],
+  ['开发平台调整因子', 'platform_factor'],
+  ['开发语言/平台调整因子', 'platform_factor'],
+  ['开发团队背景调整因子', 'team_factor'],
+  ['非功能性特征调整因子', 'nonfunc_factor'],
+  ['规模变更因子', 'scale_change_factor'],
+  ['规模调整因子', 'scale_change_factor'],
+  ['规模调整因子CF', 'scale_change_factor'],
+  ['软件功能规模调整因子（VAF）', 'scale_change_factor'],
+  ['复用度调整因子', 'reuse_factor'],
+  ['复用系数', 'reuse_factor'],
+]
+const wantKey = new Map(WAS_NAME_MATCH)
+const noKeyRows: string[] = []
+const wrongKeyRows: string[] = []
+let nameHitRows = 0
+for (const p of estimationParameters) {
+  const want = wantKey.get(p.param_name)
+  if (!want) continue
+  nameHitRows++
+  if (!p.param_key) noKeyRows.push(`${p.standard_id} / ${p.param_name}`)
+  else if (p.param_key !== want) wrongKeyRows.push(`${p.standard_id} / ${p.param_name}（应 ${want}，实 ${p.param_key}）`)
+}
+results.push(['改造前引擎按名字命中的每一行，现在都带上了正确的参数键',
+  noKeyRows.length === 0 && wrongKeyRows.length === 0,
+  noKeyRows.length || wrongKeyRows.length
+    ? [noKeyRows.length ? `漏键：${noKeyRows.join('；')}` : '',
+       wrongKeyRows.length ? `键不对：${wrongKeyRows.join('；')}` : ''].filter(Boolean).join(' ｜ ')
+    : `${nameHitRows} 行全部对上（覆盖 ${WAS_NAME_MATCH.length} 种中文名）`])
+
+// (2) 下界：每个参数键都还真的被某一行用着（防「整块删掉 / 键被摘掉」后无人察觉）
+const unusedKeys = PARAM_KEY_VALUES.filter((k) => !estimationParameters.some((p) => p.param_key === k))
+results.push(['每个参数键都还有行在用（防整块被删）', unusedKeys.length === 0,
+  unusedKeys.length ? `没有任何行在用：${unusedKeys.join(', ')}` : `${PARAM_KEY_VALUES.length} 个键均有行使用`])
+
+// (3) 种子里出现的键必须在 paramKeys.ts 登记过（防拼成 hn / pdr_devv 这种静默失配）
+const strayKeys = [...new Set(estimationParameters.filter((p) => p.param_key).map((p) => p.param_key!))]
+  .filter((k) => !PARAM_KEY_VALUES.includes(k))
+results.push(['种子里的参数键都在 paramKeys.ts 登记过（没拼错）', strayKeys.length === 0,
+  strayKeys.length ? `未登记：${strayKeys.join(', ')}` : '全部已登记'])
+
+// (4) 同一个中文名不能对应两个键 —— 否则回填时这一行写成哪个键全看顺序
+const keySets = new Map<string, Set<string>>()
+for (const p of estimationParameters) {
+  if (!p.param_key) continue
+  if (!keySets.has(p.param_name)) keySets.set(p.param_name, new Set())
+  keySets.get(p.param_name)!.add(p.param_key)
+}
+const ambiguous = [...keySets].filter(([, s]) => s.size > 1).map(([n, s]) => `${n} → ${[...s].join('/')}`)
+results.push(['中文名与参数键一一对应（回填不会写错）', ambiguous.length === 0,
+  ambiguous.length ? ambiguous.join('；') : `${keySets.size} 种中文名各对应唯一键`])
+
+// (5) 通道验证：每个键都必须真的出现在引擎源码里（接线到位）。
+//     ⚠️ 与第 (6) 条一正一反：这条证明「键接上了」，那条证明「名字没接回去」。
+const notWired = PARAM_KEY_VALUES.filter((k) => !new RegExp(`['"]${k}['"]`).test(engineSrc))
+results.push(['每个参数键都真的接在引擎源码里（不是只在种子里存在）', notWired.length === 0,
+  notWired.length ? `引擎里搜不到：${notWired.join(', ')}` : `${PARAM_KEY_VALUES.length} 个键均在 pricingStandards.ts 出现`])
+
+// (6) 防回退：引擎不许再按中文名匹配取值。
+//     ⚠️ 锚定「比较动作」而不是「有没有出现 param_name 这个词」——
+//       注释里提一句 param_name 不该报红，真按名字取值必须报红。
+const NAME_MATCH: RegExp[] = [
+  /param_name\s*===?\s*['"]/,
+  /param_name\s*!==?\s*['"]/,
+  /param_name\.includes\s*\(/,
+  /param_name\.startsWith\s*\(/,
+]
+const nameMatchHits: string[] = []
+for (const rel of RUNTIME_FILES) {
+  const src = stripComments(readSrc(rel))
+  for (const re of NAME_MATCH) if (re.test(src)) nameMatchHits.push(`${rel} → ${re.source}`)
+}
+results.push(['引擎不再按中文名匹配取值（改按参数键）', nameMatchHits.length === 0,
+  nameMatchHits.length ? nameMatchHits.join('；') : `${RUNTIME_FILES.length} 个运行时文件已核对`])
+
+// (7) 后台必须给每个键配中文标签 —— 否则列表里会露出 hm / pdr_dev 这种英文
+const keyEnum = DATA_ENUMS['estimation_parameters.param_key'] || {}
+const noLabel = PARAM_KEYS.filter((k) => !keyEnum[k.key] || !/[\u4e00-\u9fa5]/.test(keyEnum[k.key])).map((k) => k.key)
+results.push(['后台给每个参数键都配了中文标签（列表不露英文）', noLabel.length === 0,
+  noLabel.length ? `缺中文：${noLabel.join(', ')}` : `${PARAM_KEYS.length} 个键全部有中文`])
+
+// (8) db.ts 四处必须同步：建表 / 幂等加列 / 首次灌入 / 老库回填。
+//     ⚠️ 少任何一处都会出问题，尤其回填 —— 少它则已上线的库（行数 > 0）永远拿不到键，
+//       而引擎只认键 → 线上所有标准一起掉兜底值。这类「本地测不出、上线才炸」必须用断言挡。
+const dbSteps: [string, boolean][] = [
+  ['建表含 param_key 列', /param_key\s+TEXT/.test(dbSrc)],
+  ['幂等 ALTER 加列（老库升级用）', /ALTER TABLE estimation_parameters ADD COLUMN IF NOT EXISTS param_key/.test(dbSrc)],
+  ['首次灌入写 param_key', /param_name,\s*param_key,\s*param_type/.test(dbSrc)],
+  ['老库幂等回填（空则填、非空保留）', /UPDATE estimation_parameters SET param_key/.test(dbSrc)],
+]
+const dbMissing = dbSteps.filter(([, ok]) => !ok).map(([n]) => n)
+results.push(['db.ts 四步齐全（建表 / 加列 / 灌入 / 回填）', dbMissing.length === 0,
+  dbMissing.length ? `缺：${dbMissing.join('、')}` : '四处改动齐全'])
+
+// (9) 回填块必须在「首次灌入」那个分支**之外**（在分支里的话，行数 > 0 的老库永远不执行它）。
+const seedLogIdx = dbSrc.indexOf('[seed] estimation_parameters 已灌')
+const backfillIdx = dbSrc.indexOf('UPDATE estimation_parameters SET param_key')
+results.push(['回填不在「首次灌入」分支里（否则老库永不回填）',
+  seedLogIdx >= 0 && backfillIdx > seedLogIdx,
+  backfillIdx > seedLogIdx ? '回填在灌入分支之后，每次启动都会补空值' : `顺序可疑：灌入日志 ${seedLogIdx} / 回填 ${backfillIdx}`])
+
 console.log('\n══ 标准驱动 / 参数表化 护栏 ══')
 for (const [name, ok, detail] of results) {
   console.log(`  ${ok ? '✓' : '✗'} ${name}`)
@@ -203,5 +340,5 @@ if (failed.length) {
   console.log(`✗ 未通过：${failed.length} 项`)
   process.exit(1)
 }
-console.log(`✓ 通过：${results.length} 项（搬迁保真 / 算法自洽 / 未回退）`)
+console.log(`✓ 通过：${results.length} 项（搬迁保真 / 算法自洽 / 未回退 / 取数不靠名字）`)
 console.log('')

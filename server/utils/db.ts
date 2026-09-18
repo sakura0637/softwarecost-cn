@@ -495,6 +495,7 @@ CREATE TABLE IF NOT EXISTS estimation_parameters (
   category      TEXT,             -- 开发 / 运维
   param_category TEXT,            -- 规模度量-功能点相关 / 规模度量-其他 / 工作量度量 / 成本估算
   param_name    TEXT NOT NULL,
+  param_key     TEXT,             -- 引擎识别本行参数的唯一依据，取值见 server/config/paramKeys.ts
   param_type    TEXT,             -- weight / factor / rate / productivity / formula
   unit          TEXT,
   values        TEXT,             -- JSONB 兼容：存为 TEXT(JsonString)，读取端 JSON.parse
@@ -505,6 +506,12 @@ CREATE TABLE IF NOT EXISTS estimation_parameters (
 );
 CREATE INDEX IF NOT EXISTS idx_ep_std   ON estimation_parameters(standard_id);
 CREATE INDEX IF NOT EXISTS idx_ep_cat   ON estimation_parameters(param_category);
+
+-- 标准驱动（取数层）：引擎原来按 param_name 的**中文名字面量**匹配取值，于是「后台改个中文名」
+-- 就等于「静默改行为」——匹配不到就掉兜底值。而兜底 HM(174) 恰好等于多数标准的取值，
+-- 失配被数值巧合掩盖（只有北京 DB11/T 1010 的 176 会悄悄变 174，金额小改、不报错不留痕）。
+-- 现在引擎只认 param_key（见 server/config/paramKeys.ts），中文名退为纯展示字段。
+ALTER TABLE estimation_parameters ADD COLUMN IF NOT EXISTS param_key TEXT;
 
 -- ── 运维费用测算参数库（2026-09-15）────────────────────────────────────
 -- 双引擎：c1 = C.1工作量法（GB/T 28827.7-2022 附录A 因子 +《中国软件行业基准数据》附录C.1）
@@ -864,14 +871,38 @@ CREATE TABLE IF NOT EXISTS kv (
       await pool.query(
         `INSERT INTO estimation_parameters
           (standard_id, standard_code, standard_name, edition, region, org, category,
-           param_category, param_name, param_type, unit, values, description, seq, is_active)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+           param_category, param_name, param_key, param_type, unit, values, description, seq, is_active)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
          ON CONFLICT DO NOTHING`,
         [p.standard_id, p.standard_code, p.standard_name, p.edition, p.region, p.org, p.category,
-         p.param_category, p.param_name, p.param_type, p.unit, JSON.stringify(p.values), p.description, p.seq, true]
+         p.param_category, p.param_name, p.param_key, p.param_type, p.unit,
+         JSON.stringify(p.values), p.description, p.seq, true]
       )
     }
     console.log(`[seed] estimation_parameters 已灌 ${estimationParameters.length} 条`)
+  }
+
+  // 4.5b) 参数键回填（幂等）：老库里的行没有 param_key，而引擎现在只认它 ——
+  //       不回填的话，线上所有标准都会掉到兜底值。策略＝「空则填、非空保留」：
+  //       · 只动 param_key 为空的行（历史遗留）；后台人工填过/改过的一律保留；
+  //       · 按「中文名 → 参数键」去重后逐名一条 UPDATE（~15 条），不逐行刷 99 次；
+  //       · 引擎消费不到的名字（纯展示行）本就不在映射里，保持为空 —— 这正是「不进引擎」的标记。
+  //       ⚠️ 不能塞进上面的 `if (epCount === 0)` 里：那样对已上线的库永远不会执行。
+  {
+    const byName = new Map<string, string>()
+    for (const p of estimationParameters) {
+      if (p.param_key && !byName.has(p.param_name)) byName.set(p.param_name, p.param_key)
+    }
+    let backfilled = 0
+    for (const [name, key] of byName) {
+      const r = await pool.query(
+        `UPDATE estimation_parameters SET param_key = $1
+          WHERE param_name = $2 AND (param_key IS NULL OR param_key = '')`,
+        [key, name]
+      )
+      backfilled += r.rowCount || 0
+    }
+    if (backfilled) console.log(`[seed] estimation_parameters 参数键回填 ${backfilled} 行（${byName.size} 个参数名）`)
   }
 
   // 4.6) 全局测算兜底参数（pricing_defaults）：把原先写死在代码里的领域常量搬进库。

@@ -13,6 +13,8 @@ export interface CityRate {
   source: string
 }
 
+import { paramKeyFor } from '../config/paramKeys'
+
 export interface ParamValue {
   label: string
   factor: number | string
@@ -29,6 +31,9 @@ export interface EstimationParameter {
   category: '开发' | '运维'
   param_category: string // 规模度量-功能点相关 / 规模度量-其他 / 工作量度量 / 成本估算
   param_name: string
+  /** 引擎识别本行参数的唯一依据（见 server/config/paramKeys.ts）。
+   *  为空 = 本行不进引擎，仅作页面展示（如「运维对象特征-用户规模」这类参考项）。 */
+  param_key: string | null
   param_type: string // weight / factor / rate / productivity / formula
   unit: string
   values: ParamValue[]
@@ -197,8 +202,10 @@ const SCALE_CHANGE: ParamValue[] = [
 
 const params: EstimationParameter[] = []
 let SEQ = 0
-function add(p: Omit<EstimationParameter, 'seq'>) {
-  params.push({ ...p, seq: ++SEQ })
+function add(p: Omit<EstimationParameter, 'seq' | 'param_key'>) {
+  // 参数键由「名字 + 类型 + 类别」按规则推出（规则表见 server/config/paramKeys.ts）：
+  // 引擎只认 param_key，中文名改了不影响测算；推不出键的行就是纯展示行。
+  params.push({ ...p, param_key: paramKeyFor(p.param_name, p.param_type, p.category), seq: ++SEQ })
 }
 
 // ===== 1. 四川（开发）T/SCSIA 0015-2025 =====

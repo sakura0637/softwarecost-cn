@@ -160,7 +160,10 @@ export async function buildPricingStandards() {
     }
 
     // ---- hm ----
-    let hm = num(parseValues(find((p) => p.param_name === '人月折算系数'))[0]?.factor)
+    // ⚠️ 一律按 param_key 取数，不按中文名 —— 理由见 server/config/paramKeys.ts 顶部注释：
+    //    按名字匹配时，后台改个中文名就静默掉兜底值，而兜底 HM(174) 恰好等于多数标准的取值，
+    //    失配被数值巧合掩盖（只有北京的 176 会悄悄变 174）。改名不再影响测算。
+    let hm = num(parseValues(find((p) => p.param_key === 'hm'))[0]?.factor)
     const filled: string[] = []
     if (hm == null) {
       hm = d.fallbackHm.value
@@ -171,9 +174,7 @@ export async function buildPricingStandards() {
     // suggestedCity：该地区对应的代表城市（来自「全局测算兜底」表的省份映射）。标准未给费率时用它补齐；
     // 即使标准自带费率，也一并返回，便于用户按城市重新取费（如四川标准改按成都价）。
     const suggestedCity = d.provinceCity[head.region] || ''
-    let rate = num(
-      parseValues(find((p) => p.param_name === '平均人力成本费率' || p.param_name === '基准人月费率'))[0]?.factor
-    )
+    let rate = num(parseValues(find((p) => p.param_key === 'rate'))[0]?.factor)
     const rateMode: 'standard' | 'city' = rate == null ? 'city' : 'standard'
     if (rate == null) {
       const cname = suggestedCity
@@ -185,13 +186,16 @@ export async function buildPricingStandards() {
     }
 
     // ---- pdr 选项（严格区分开发/运维，避免把开发生产率套到运维标准上） ----
+    // 分档靠参数键本身（pdr_dev / pdr_ops），不再靠名字里有没有「运维」二字。
+    // 等价性：csbmk-2025 组里有 1 行运维生产率、组头类别却是「开发」，
+    //        改造前靠名字判定把它跳过；现在它带的是 pdr_ops 键，同样进不了 pdr_dev 的选取范围。
+    const pdrKey = category === '运维' ? 'pdr_ops' : 'pdr_dev'
     const pdrOptions: PdrOption[] = []
-    let hasProductivityParam = false
+    // 「给出过生产率」的判据是参数类型，不是能否取到数字 ——
+    // 山东那种「按业务领域 P50 参考CSBMK」（值指向外部基准）也算给出过，应走兜底而非算作缺失。
+    const hasProductivityParam = items.some((p) => p.param_type === 'productivity')
     for (const p of items) {
-      if (p.param_type !== 'productivity') continue
-      hasProductivityParam = true
-      const isMaint = /运维/.test(p.param_name)
-      if ((category === '运维') !== isMaint) continue
+      if (p.param_key !== pdrKey) continue
       for (const v of parseValues(p)) {
         const n = num(v.factor)
         if (n != null) pdrOptions.push({ label: v.label, value: n })
@@ -209,19 +213,19 @@ export async function buildPricingStandards() {
     // 保持 pdr=null 并计入 missing —— 不做兜底，否则会伪装成可测算、算出无意义的结果。
 
     // ---- 调整因子 ----
-    const factorOf = (keywords: string[]) => {
-      const p = find((x) => keywords.some((k) => x.param_name.includes(k)))
+    const factorOf = (key: string) => {
+      const p = find((x) => x.param_key === key)
       return parseValues(p)
         .map((v: any) => ({ label: v.label, factor: v.factor }))
         .filter((v: any) => v.label)
     }
     const factors = {
-      applicationType: factorOf(['应用类型']),
-      platform: factorOf(['开发平台', '开发语言']),
-      team: factorOf(['开发团队背景']),
-      nonFunctional: factorOf(['非功能性']),
-      scaleChange: factorOf(['规模变更', '规模调整']),
-      reuse: factorOf(['复用']),
+      applicationType: factorOf('app_type_factor'),
+      platform: factorOf('platform_factor'),
+      team: factorOf('team_factor'),
+      nonFunctional: factorOf('nonfunc_factor'),
+      scaleChange: factorOf('scale_change_factor'),
+      reuse: factorOf('reuse_factor'),
     }
 
     const missing: string[] = []
@@ -273,7 +277,7 @@ export async function buildPricingStandards() {
       productivity,
       fpPrice,
       laborRateWan: rate != null ? Math.round((rate / 10000) * 100) / 100 : null,
-      cf: num(parseValues(find((p) => p.param_name.includes('规模变更') || p.param_name.includes('规模调整')))[0]?.factor),
+      cf: num(parseValues(find((p) => p.param_key === 'scale_change_factor'))[0]?.factor),
       factors,
       rateMode,
       suggestedCity,
