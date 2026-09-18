@@ -10,7 +10,7 @@
  *   B. 种子数据里出现的英文编码值，DATA_ENUMS 必须全部覆盖（否则会原样显示给用户）
  *   C. hidden / readonly 引用的列名在 db.ts 表定义里真实存在（防手误写错列名后静默失效）
  */
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, readdirSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { standards } from '../composables/useStandards'
@@ -208,6 +208,28 @@ const droppedInert = KNOWN_INERT.filter(([t, c]) => !(TABLE_CALC_ROLES[t]?.inert
   .map(([t, c]) => `${t}.${c}`)
 results.push(['已确认的无效列没有被从声明里悄悄摘掉', droppedInert.length === 0,
   droppedInert.length ? `被摘掉：${droppedInert.join(', ')}` : `${KNOWN_INERT.length} 个已确认无效列仍在册`])
+
+// 最硬的一条：拿**引擎源码**当判据，而不是拿声明互相自证。
+// 由来（2026-09-18）：给 standards 加 id 桥接后，它被 pricingParams.ts 读了，但声明还停在 page ——
+// 徽标继续对用户说「仅页面展示 / 改这里不影响任何金额」，而实际上改「代号」会让该标准的算法声明失配、
+// 静默回落全局默认，每条功能点的点数都变。上面那些断言全都保证不了这件事：
+// 它们只校验「登记了」「取值合法」，而声明本身错得理直气壮时，一条都不会红。
+// 所以这里改问一句「站在引擎代码里的 SQL 提没提它」——
+// 被 server/utils/ 读到的表，就不可能是「仅页面展示」。db.ts 除外：那是建表/种子/计数，
+// 属自举逻辑，不是消费方（否则每张表都会因为它建表而被判成引擎表）。
+const projectRoot = resolve(dirname(findDbTs()), '../..')
+const engineFiles = readdirSync(resolve(projectRoot, 'server/utils'))
+  .filter((f) => f.endsWith('.ts') && f !== 'db.ts')
+  .map((f) => [f, readFileSync(resolve(projectRoot, 'server/utils', f), 'utf8')] as const)
+const roleMismatch: string[] = []
+for (const [k, decl] of Object.entries(TABLE_CALC_ROLES)) {
+  if (decl.role !== 'page' && decl.role !== 'dead') continue
+  const re = new RegExp(`\\b(?:FROM|JOIN|UPDATE|INTO)\\s+${k}\\b`, 'i')
+  const hit = engineFiles.find(([, src]) => re.test(src))
+  if (hit) roleMismatch.push(`${k}（声明"${CALC_ROLE_LABELS[decl.role].label}"，但 ${hit[0]} 在读它）`)
+}
+results.push(['声明为「仅页面展示 / 无消费方」的表，引擎代码里确实没人读', roleMismatch.length === 0,
+  roleMismatch.length ? roleMismatch.join('；') : `已比对 ${engineFiles.length} 个引擎文件，无脱钩`])
 
 // ── 输出 ──
 console.log('\n══ 数据维护后台可读性护栏 ══')

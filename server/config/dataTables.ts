@@ -56,8 +56,13 @@ export const CALC_ROLE_LABELS: Record<CalcRole, { label: string; note: string }>
 
 export const TABLE_CALC_ROLES: Record<string, { role: CalcRole; inert?: string[]; reason: string }> = {
   standards: {
-    role: 'page', inert: ['is_enabled', 'source'],
-    reason: '只是标准目录，被 /standards 页与 /api/standards 读取；计价引擎读的是 estimation_parameters',
+    // 2026-09-18 修正：原声明为 page（「只是目录，不进计算」）。加了标准 id 桥接之后不成立了 ——
+    // pricingParams.loadBindings() 会读本表拿 code / name，把 estimation_parameters.standard_id
+    // 翻译成 standards.id，才能取到该标准在 standard_benchmarks 里声明的算法与判定矩阵。
+    // 改 code / name 会让桥接失配 → 该标准的声明读不到 → 静默回落到全局默认算法 → 每条功能点的
+    // UFP 都变，金额跟着变。所以它确实「参与计算」，只是参与方式是当锚点，不是存参数。
+    role: 'engine', inert: ['is_enabled', 'source'],
+    reason: '引擎解析标准时读它做 id 桥接（两套 standard_id 命名 → standards.id），同时是 /standards 页与新建项目下拉的目录源',
   },
   standard_parameters: {
     role: 'page',
@@ -146,8 +151,12 @@ export const DATA_TABLES: DataTableConf[] = [
     readonly: ['params', 'param_values', 'source'],
     json: ['params', 'param_values'],
     hint: `全部造价标准的目录（国标 / 行标 / 地标 / 军标），是「标准」这一层的唯一台账。
-【本表不参与任何计算】它只是目录。真正被计价引擎读取的是「行业基准参数」表（见那张表的说明），
-改本表的名称 / 代号 / 摘要只影响 /standards 页的展示，不会改变任何测算金额。
+【本表不存计价参数，但「代号」是引擎的锚点】hm / 费率 / 生产率都在「行业基准参数」表里，不在本表。
+但引擎解析标准时要靠本表的「代号」「名称」把两套编号对上（同一套标准在本表叫 sc-t-0015，
+在「行业基准参数」里叫 scsia-0015-2025，命名不一致，靠桥接匹配）。
+⚠️ 所以改「代号」是有后果的：桥接一旦失配，该标准在「标准基准取值」里声明的算法与复杂度判定矩阵就读不到，
+测算会静默回落到全局默认算法 —— 每条功能点的点数都变，金额跟着变。改之前请确认新代号与参数表一致。
+改「名称」「摘要」则只影响 /standards 页展示与新建项目下拉里的文字，不动金额。
 【级别】national 国家标准 / provincial 省级地方标准 / municipal 市级地方标准 / industry 行业标准 / military 军用标准。
 【两个入口的分工】本后台独有 Excel 批量导入导出；/standards 页则是单条录入与卡片浏览。改的是同一份数据，注意别重复录入。
 【「启用」列目前不产生效果】引擎与 /standards 页都不过滤这一列，勾掉它不会让标准从任何列表里消失（留着备将来用）。
