@@ -38,3 +38,6 @@ test_write.txt
 # 一次性分析/迁移的中转产物（解析基线、快照、差异报告）
 # 这些都可由 scripts/ 下的脚本重新生成，不入库
 _tmp_*/
+
+# 迁移前的自动备份（apply_device_align.mjs 在 --apply 时写入）
+_backup/
