@@ -230,8 +230,8 @@ console.log(`        固定值条目：${omQuotaItems.find((q) => !q.formula)?.f
 console.log('')
 
 // ── 查找缓存（大清单测算的性能关键，但绝不能改变结果）──
-// 设备库全量 8452 行里同名设备重复出现几十次，而 lookupQuota 是 349 条定额的全表扫描
-// （未命中时最多探 4 轮 + 反复算归一化名）。加记忆化后定额法 8452 行 1042ms → ~40ms，
+// 设备库全量 10298 行里同名设备重复出现几十次，而 lookupQuota 是 349 条定额的全表扫描
+// （未命中时最多探 4 轮 + 反复算归一化名）。加记忆化后定额法 10298 行 1042ms → ~40ms，
 // 最坏情况（全部未命中）3852ms → ~33ms。这里锁住两点：**结果不变** + **重复 ref 真正复用**。
 const quotaRefs = [omQuotaItems[0].name, omQuotaItems[5].name, '完全不存在的设备名XYZ', omQuotaItems[0].name]
 const c1Refs = [omC1Benchmarks[0].category, '借' + omC1Benchmarks[3].category, '完全不存在的类别XYZ']
@@ -252,7 +252,7 @@ console.log(`  C.1 缓存键 ${cCache.size} 个；「借XX」类别的解析值 
 console.log('')
 
 // ── 大清单性能护栏（防「悄悄退回每行全表扫描」→ 主人又看到红线拦路）──
-// 设备库「全选站点」= 8452 行，正是被旧的 3000 行上限挡住的那个正常用法。
+// 设备库「全选站点」= 10298 行，正是被旧的 3000 行上限挡住的那个正常用法。
 // 取 3 次的**最小值**（排除调度抖动）后本机实测：
 //   两级缓存都在      ≈ 45~60 ms
 //   只剩归一化名缓存  ≈ 330 ms     ← 等价于「摘掉 ref 缓存」
@@ -261,7 +261,7 @@ console.log('')
 // ⚠️ 这条护栏做过反向实测 —— 第一版阈值 800ms 时摘掉缓存仍能通过，等于摆设，故收紧。
 // 这类回归 esbuild / imports / vue / dbsql 四项**全都查不出来**，只能靠实测。
 const PERF_MAX_MS = 220
-const bigItems: OmItemInput[] = Array.from({ length: 8452 }, (_, i) => {
+const bigItems: OmItemInput[] = Array.from({ length: 10298 }, (_, i) => {
   const q = omQuotaItems[i % omQuotaItems.length]
   return {
     name: q.name,
@@ -282,7 +282,7 @@ for (let k = 0; k < 3; k++) {
   bigUnresolved = bigRes.items.filter((x) => !x.resolved).length
 }
 console.log('══ 大清单性能 ══')
-console.log(`  定额法 8452 行 = ${perfMs.toFixed(1)} ms（3 次取最小；阈值 ${PERF_MAX_MS}ms，摘掉 ref 缓存会到 ~330ms）`)
+console.log(`  定额法 10298 行 = ${perfMs.toFixed(1)} ms（3 次取最小；阈值 ${PERF_MAX_MS}ms，摘掉 ref 缓存会到 ~330ms）`)
 console.log(`  合计 = ${bigTotal.toFixed(2)} 元；未匹配 ${bigUnresolved} 行`)
 console.log('')
 
@@ -565,8 +565,10 @@ const checks: Array<[string, boolean, string]> = [
     siteTree.every((n) => n.subsites.every((s) => s.name !== '全站设备汇总' || n.station === '总调中心')),
     siteTree.flatMap((n) => n.subsites.filter((s) => s.name === '全站设备汇总').map((s) => n.station + '/' + s.name)).join(',')],
   ['总调中心的汇总站保留（它没有真实子站）', !!zdzx && zdzx.count > 0, String(zdzx?.count)],
-  ['站点行数合计 = 8452（剔重后）', allRows === 8452, String(allRows)],
-  ['石家庄 = 1535 行 / 32 个子站', sjz?.count === 1535 && sjz?.subsites.length === 32,
+  ['站点行数合计 = 10298（剔重后）', allRows === 10298, String(allRows)],
+  // 数值随「设备台账对齐」（2026-09-23）更新：合并核心节点后子站 32 → 31，
+  // 并从台账补齐设备后行数 1535 → 1662。它锁的是「站点树取数没退化」，不是台账本身。
+  ['石家庄 = 1662 行 / 31 个子站', sjz?.count === 1662 && sjz?.subsites.length === 31,
     `${sjz?.count} 行 / ${sjz?.subsites.length} 个子站`],
   ['选择解析：精确子站 + 管理处通配',
     sel.length === 2 && sel[0].subsite === '正定管理站' && sel[1].subsite === '*', JSON.stringify(sel)],
@@ -589,9 +591,9 @@ const checks: Array<[string, boolean, string]> = [
   ['重复 ref 走缓存（4 次探测只建 3 个键）', qCache.size === 3, String(qCache.size)],
   ['C.1「借XX」类别可解析且入缓存', cCache.size === 3 && c1Refs.slice(0, 2).every((r) => lookupC1(params.c1, r) != null),
     `${cCache.size} 键 / 借类别=${lookupC1(params.c1, c1Refs[1])}`],
-  // —— 大清单性能护栏：8452 行不能退化（这是「全选站点」的真实体量）——
-  ['定额法 8452 行 < ' + PERF_MAX_MS + 'ms（查找缓存未退化）', perfMs < PERF_MAX_MS, `${perfMs.toFixed(1)} ms`],
-  ['大清单确实算出了金额（非空跑）', bigTotal > 0 && bigUnresolved < 8452, `${bigTotal.toFixed(0)} 元 / 未匹配 ${bigUnresolved}`],
+  // —— 大清单性能护栏：10298 行不能退化（这是「全选站点」的真实体量）——
+  ['定额法 10298 行 < ' + PERF_MAX_MS + 'ms（查找缓存未退化）', perfMs < PERF_MAX_MS, `${perfMs.toFixed(1)} ms`],
+  ['大清单确实算出了金额（非空跑）', bigTotal > 0 && bigUnresolved < 10298, `${bigTotal.toFixed(0)} 元 / 未匹配 ${bigUnresolved}`],
   // —— 单行追溯：最要紧的是「追溯金额 = 引擎金额」，否则就是自相矛盾 ——
   ['C.1 追溯金额 = 引擎金额', trC1.amount === r1.items[0].amount, `${trC1.amount} vs ${r1.items[0].amount}`],
   ['定额法追溯金额 = 引擎金额', trQuota.amount === r2.items[0].amount, `${trQuota.amount} vs ${r2.items[0].amount}`],
