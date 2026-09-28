@@ -15,10 +15,12 @@
 //   npm run align:devices                        # dry-run，只报告不写库
 //   npm run align:devices -- --apply             # 真正执行（**执行前自动备份三表**）
 //   npm run align:devices -- --restore=<备份文件>  # 从自动备份回滚
+//   npm run align:devices -- --verify=<三表快照>   # 核对库里是否已达目标态（不连库）
 //
 // 备份：--apply 时会先把 devices / stations / station_devices 三张表整表快照到
 //       _backup/device_align_<时间戳>.json，所以不必再手工敲 pg_dump。
 //       本脚本只改这三张表，因此只备这三张表就够了（视图不用备，定义在代码里）。
+//       执行后如需核对，可用 --verify= 喂同一类快照，逐行比对目标态种子。
 //
 // 连接：本脚本由普通 node 启动（不经 PM2），**.env 不会自动生效** →
 //       这里自己按 ecosystem.config.cjs 的做法加载 .env，并复刻 db.ts 的连接串口径
@@ -69,6 +71,15 @@ const RESTORE_FILE = RESTORE_ARG ? RESTORE_ARG.slice('--restore='.length) : ''
 if (RESTORE_ARG && !RESTORE_FILE) {
   console.error('✗ --restore 必须写成 --restore=<备份文件>（用等号，不要用空格）')
   console.error('   例：npm run align:devices -- --restore=_backup/device_align_2026-09-23-10-00-00.json')
+  process.exit(1)
+}
+
+// --verify=<执行后的三表快照>：不连库，直接核对「库里是否已完全达到目标态」。
+// 用途：执行完 --apply 后，隔一会儿再取一份快照核对（也能发现站点树被其它操作改动）。
+const VERIFY_ARG = process.argv.find((a) => a === '--verify' || a.startsWith('--verify='))
+const VERIFY_FILE = VERIFY_ARG ? VERIFY_ARG.slice('--verify='.length) : ''
+if (VERIFY_ARG && !VERIFY_FILE) {
+  console.error('✗ --verify 必须写成 --verify=<快照文件>（用等号，不要用空格）')
   process.exit(1)
 }
 
@@ -128,9 +139,65 @@ function loadBackup(file) {
   return dump
 }
 
+/** 比对用的归一：null / undefined / '' / 0 视为同一个「空值」
+ *  （种子里的零数量行 qty 可能是 null 或 0，落库后一律变 0，不该报成差异） */
+const normCell = (v) => (v == null || v === '' || Number(v) === 0 ? '' : String(v))
+
+/** 完成度核对：拿一份**执行后**的三表快照，与目标态种子逐行比对（不连库） */
+function verifyAgainstSeed(dump) {
+  const { devices, stations, station_devices: links } = dump.tables
+
+  // 由快照重算「库应当暴露给运维引擎的形态」
+  const devById = new Map(devices.rows.map((d) => [String(d.id), d]))
+  const stById = new Map(stations.rows.map((s) => [String(s.id), s]))
+  const libSet = new Set()
+  for (const l of links.rows) {
+    const d = devById.get(String(l.device_id))
+    const s = stById.get(String(l.subsite_id))
+    if (!d || !s) continue
+    const mgr = stById.get(String(s.parent_id))
+    libSet.add(JSON.stringify([
+      mgr?.name ?? '', s.name ?? '',
+      normCell(d.category), normCell(d.subcategory), d.name ?? '',
+      normCell(d.brand_model), normCell(d.unit),
+      normCell(d.unit_price),
+      normCell(l.qty),
+    ]))
+  }
+  const seedSet = new Set(TARGET.map((r) => JSON.stringify([
+    r.station || '', r.subsite || '',
+    normCell(r.category), normCell(r.subcategory), r.name ?? '',
+    normCell(r.brand_model), normCell(r.unit),
+    normCell(r.unit_price),
+    normCell(r.qty),
+  ])))
+
+  const onlySeed = [...seedSet].filter((x) => !libSet.has(x))
+  const onlyLib = [...libSet].filter((x) => !seedSet.has(x))
+  const pct = seedSet.size ? ((libSet.size - onlyLib.length) / seedSet.size) * 100 : 0
+
+  log('')
+  log('── 完成度核对（执行后快照 vs 目标态种子）──')
+  log(`   目标态 ${seedSet.size} 条关联 · 库中 ${libSet.size} 条关联`)
+  log(`   完全一致 ${libSet.size - onlyLib.length} 条（${pct.toFixed(2)}%）`)
+  if (onlySeed.length) {
+    log(`   ⚠️ 目标态有、库里缺/不同：${onlySeed.length} 条`)
+    for (const x of onlySeed.slice(0, 15)) log(`      ${x}`)
+    if (onlySeed.length > 15) log(`      …（共 ${onlySeed.length} 条）`)
+  }
+  if (onlyLib.length) {
+    log(`   ℹ️ 库里有、目标态没有（库独有保留，符合口径）：${onlyLib.length} 条`)
+    for (const x of onlyLib.slice(0, 5)) log(`      ${x}`)
+    if (onlyLib.length > 5) log(`      …（共 ${onlyLib.length} 条）`)
+  }
+  log('')
+  log(onlySeed.length === 0
+    ? '   ✓ 目标态已全部落库，与种子逐行一致'
+    : `   ⚠️ 仍有 ${onlySeed.length} 条未落库，请核对（重复执行 --apply 可补齐缺失项）`)
+}
+
 /** 从快照原样回滚（清空三表后按主键重新插入） */
 async function restoreFrom(dump) {
-  log(`备份时间：${dump.takenAt}`)
   for (const t of BACKUP_TABLES) log(`   ${t}：${dump.tables[t].rows.length} 行`)
 
   // ⚠️ 必须用**同一条连接**跑事务：pool.query 每次可能借出不同连接，
@@ -214,6 +281,17 @@ async function q(sql, params) {
 
 // ─────────────────────────────────────────────────────────────
 async function main() {
+  // ── 核对模式：纯本地，不连库 ──
+  if (VERIFY_FILE) {
+    log('═══ 设备台账对齐 · 完成度核对（不连库）═══')
+    log(`快照文件：${VERIFY_FILE}`)
+    const dump = loadBackup(VERIFY_FILE)
+    log(`快照时间：${dump.takenAt ?? '(未知)'}`)
+    verifyAgainstSeed(dump)
+    await pool.end().catch(() => {})
+    return
+  }
+
   log(RESTORE_FILE
     ? '═══ 设备台账对齐 · 回滚模式 ═══'
     : (APPLY ? '═══ 设备台账对齐 · 执行模式 ═══' : '═══ 设备台账对齐 · DRY-RUN（不写库）═══'))
