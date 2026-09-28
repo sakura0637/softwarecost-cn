@@ -10,6 +10,8 @@ import * as XLSX from 'xlsx'
 import { matchDevice, matchC1Rule, matchQuotaItem, buildQuotaIndex,
   buildSiteTree, parseSiteSelection, buildSiteWhere, countSelectedRows,
 } from '../server/utils/omDeviceMatcher'
+import { SUMMARY_SUBSITE, NOT_SUMMARY_STATIONS } from '../server/utils/deviceSeed'
+import { mergeDetailRows, planSummaryRecalc, isRecalcableSummaryStation } from '../server/utils/summarySite'
 import { readFileSync, existsSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -192,12 +194,16 @@ console.log('')
 
 // ── 站点筛选（管理处 → 子站 两级多选；测算页「选择站点」弹窗的数据基础）──
 // 设备库种子里没有 is_summary 字段，它由 deviceSeed.ts 按子站名判定：
-// 子站名为「全站设备汇总」且管理处不是总调中心 → 是重复的汇总行，必须排除。
-// 总调中心没有真实子站，它的「全站设备汇总」就是本站明细，必须保留。
+// 子站名为「全站设备汇总」且管理处不属于豁免名单 → 是重复的汇总行，必须排除。
+// 豁免名单（NOT_SUMMARY_STATIONS，**从 deviceSeed.ts 直接导入**，不另写一份）：
+//   - 总调中心：没有真实子站，「全站设备汇总」就是本站明细
+//   - 廊涿 / 廊坊：其设备在明细子站中无对应（廊涿 184 行、廊坊 49 行），实为独立清单
+//     —— 若按汇总站排除会把这两处的设备整体漏掉
+// 导入而非复制：护栏必须断言「生产代码的常量」，自己写一份等于自证。
 const treeRows = devRows.map((r: any) => ({
   station: r.station,
   subsite: r.subsite,
-  is_summary: r.subsite === '全站设备汇总' && r.station !== '总调中心',
+  is_summary: r.subsite === SUMMARY_SUBSITE && !NOT_SUMMARY_STATIONS.includes(r.station),
 }))
 const siteTree = buildSiteTree(treeRows)
 const allRows = siteTree.reduce((a, n) => a + n.count, 0)
@@ -502,6 +508,90 @@ const quotaNoteHit = omQuotaItems.filter((q) => !!columnNote('om_quota_items', q
 const factorComputedRows = omFactors.filter((f) => isComputedCalc(f.calc)).length
 const factorNoteHit = omFactors.filter((f) => !!columnNote('om_factors', f, 'value')).length
 
+// ══════════════════════════════════════════════════════════════
+// 汇总站重算（2026-09-21）：把「全站设备汇总」从写死的一行改成「明细累加」
+//
+// 口径（主人三轮确认）：
+//   同款累加 = 分类+子分类+名称+品牌型号+单位+单价 全同才合并
+//   不参与计价（is_summary=true 保留，避免运维费翻倍）
+//   保留实体行但自动重算（非视图现算）
+//   廊涿/廊坊当明细子站保留；站名不动；手动触发
+//
+// 这里用**真实种子**离线算一遍每个 A 类处应有的目标态，锁住：
+//   ① 重算结果 = 明细累加（逐行）
+//   ② A 类处「汇总独有行」按「名称+单位」全部能在明细中找到（= 纯冗余行，移除不丢设备）
+//   ③ 幂等（把目标态喂回去 → 0 变化）
+//   ④ 豁免处不被重算
+// ══════════════════════════════════════════════════════════════
+type SummaryStat = {
+  station: string; exempt: boolean; recalcable: boolean
+  sumRows: number; detailSubs: number; detailRows: number; target: number
+  onlyNU: number; onlyK6: number; removable: number; idemDrift: number
+}
+const summaryStats: SummaryStat[] = []
+{
+  // 建索引：station → subsite → rows
+  const byStation = new Map<string, Map<string, any[]>>()
+  for (const r of devRows as any[]) {
+    const st = String(r.station || '').trim()
+    const sub = String(r.subsite || '').trim() || '（直属）'
+    if (!byStation.has(st)) byStation.set(st, new Map())
+    const m = byStation.get(st)!
+    if (!m.has(sub)) m.set(sub, [])
+    m.get(sub)!.push(r)
+  }
+  const k6 = (r: any) =>
+    JSON.stringify([r.category ?? '', r.subcategory ?? '', r.name ?? '', r.brand_model ?? '', r.unit ?? '',
+      r.unit_price == null ? null : Number(r.unit_price)])
+  // 离线跑纯函数时没有真实 device_id（那是数据库主键），但 planSummaryRecalc 靠它比对。
+  // 用「同款键 + 出现序号」造一个稳定伪 ID：同一款设备在明细与目标态里拿到同一个号，
+  // 幂等断言才成立（用行号 i+1 会因两处行序不同而全部错位 → 假红）。
+  const fakeId = (r: any) => k6(r)
+  const detailRow = (r: any): any => ({
+    subsite: String(r.subsite || '').trim() || '（直属）',
+    device_id: fakeId(r) as any,
+    qty: r.qty == null ? null : Number(r.qty),
+    category: r.category, subcategory: r.subcategory, name: r.name,
+    brand_model: r.brand_model, unit: r.unit,
+    unit_price: r.unit_price == null ? null : Number(r.unit_price),
+  })
+
+  for (const [st, subs] of byStation) {
+    const sumRows = subs.get(SUMMARY_SUBSITE)
+    if (!sumRows) continue
+    const exempt = NOT_SUMMARY_STATIONS.includes(st)
+    // 明细 = 除汇总站外的全部子站
+    const detail: any[] = []
+    for (const [name, rs] of subs) if (name !== SUMMARY_SUBSITE) detail.push(...rs)
+
+    const detailRows = detail.map(detailRow)
+    const merged = mergeDetailRows(detailRows)
+
+    // 汇总独有行：按「名称+单位」判断（比六字段宽，专治「同款但单价写法不一致」）
+    const detailNU = new Set(detail.map((r) => JSON.stringify([r.name ?? '', r.unit ?? ''])))
+    const onlyNU = sumRows.filter((r) => !detailNU.has(JSON.stringify([r.name ?? '', r.unit ?? ''])))
+    // 六字段口径下的独有行（= 重算会被移除的行，应全部能在「名称+单位」口径下找到）
+    const detailK6 = new Set(detail.map(k6))
+    const onlyK6 = sumRows.filter((r) => !detailK6.has(k6(r)))
+    const removable = onlyK6.filter((r) => detailNU.has(JSON.stringify([r.name ?? '', r.unit ?? ''])))
+
+    // 幂等：把目标态当作「汇总站现状」喂回去，应 0 变化
+    const targetAsCurrent = merged.map((m) => ({
+      device_id: fakeId(m) as any, qty: m.qty, source: 'seed', mergeKey: '',
+    }))
+    const idem = planSummaryRecalc(detailRows, targetAsCurrent)
+
+    summaryStats.push({
+      station: st, exempt,
+      sumRows: sumRows.length, detailSubs: subs.size - 1, detailRows: detail.length,
+      target: merged.length,
+      onlyNU: onlyNU.length, onlyK6: onlyK6.length, removable: removable.length,
+      idemDrift: idem.changed + idem.removals.length,
+      recalcable: isRecalcableSummaryStation(st, SUMMARY_SUBSITE),
+    })
+  }
+}
+
 const checks: Array<[string, boolean, string]> = [
   // —— C.1 工作量法 ——
   ['人天单价 = 525.835249 元', Math.abs(params.dailyRate - 525.835249) < 1e-5, params.dailyRate.toFixed(6)],
@@ -561,11 +651,18 @@ const checks: Array<[string, boolean, string]> = [
   ['设备库定额法覆盖率 ≥ 6000 行', devQuotaHit >= 6000, String(devQuotaHit)],
   ['设备库 C.1 法覆盖率 ≥ 1900 行', devC1Hit >= 1900, String(devC1Hit)],
   // —— 站点筛选（测算页「选择站点」弹窗的数据基础）——
-  ['站点树已排除各管理处的「全站设备汇总」（总调中心除外）',
-    siteTree.every((n) => n.subsites.every((s) => s.name !== '全站设备汇总' || n.station === '总调中心')),
-    siteTree.flatMap((n) => n.subsites.filter((s) => s.name === '全站设备汇总').map((s) => n.station + '/' + s.name)).join(',')],
+  ['站点树已排除各管理处的「全站设备汇总」（豁免处除外）',
+    siteTree.every((n) => n.subsites.every((s) => s.name !== SUMMARY_SUBSITE || NOT_SUMMARY_STATIONS.includes(n.station))),
+    siteTree.flatMap((n) => n.subsites.filter((s) => s.name === SUMMARY_SUBSITE).map((s) => n.station + '/' + s.name)).join(',')],
   ['总调中心的汇总站保留（它没有真实子站）', !!zdzx && zdzx.count > 0, String(zdzx?.count)],
-  ['站点行数合计 = 10298（剔重后）', allRows === 10298, String(allRows)],
+  // 廊涿/廊坊的「全站设备汇总」是独立清单（明细中无对应：廊涿 184 行、廊坊 49 行），
+  // 必须当正常明细保留 —— 若被当汇总站排除，这两处的设备会整体漏掉。
+  ['廊涿的汇总站保留（独立清单，非冗余合计）', !!siteTree.find((n) => n.station === '廊涿')?.subsites.some((s) => s.name === SUMMARY_SUBSITE),
+    String(siteTree.find((n) => n.station === '廊涿')?.count)],
+  ['廊坊的汇总站保留（独立清单，非冗余合计）', !!siteTree.find((n) => n.station === '廊坊')?.subsites.some((s) => s.name === SUMMARY_SUBSITE),
+    String(siteTree.find((n) => n.station === '廊坊')?.count)],
+  // 10630 = 12134 总行 - 7 个 A 类处的汇总站行（保定203 保沧305 沧州257 石家庄230 衡水212 邢台230 邯郸67 = 1504）
+  ['站点行数合计 = 10630（剔重后；含廊涿/廊坊独立清单）', allRows === 10630, String(allRows)],
   // 数值随「设备台账对齐」（2026-09-23）更新：合并核心节点后子站 32 → 31，
   // 并从台账补齐设备后行数 1535 → 1662。它锁的是「站点树取数没退化」，不是台账本身。
   ['石家庄 = 1662 行 / 31 个子站', sjz?.count === 1662 && sjz?.subsites.length === 31,
@@ -692,6 +789,46 @@ const checks: Array<[string, boolean, string]> = [
     quotaFormulaRows > 0 && quotaNoteHit === quotaFormulaRows, `${quotaNoteHit}/${quotaFormulaRows}`],
   ['调整因子的系统计算行全部标出「系统算」',
     factorComputedRows > 0 && factorNoteHit === factorComputedRows, `${factorNoteHit}/${factorComputedRows}`],
+
+  // —— 汇总站重算（2026-09-21：把「全站设备汇总」从写死的一行改成明细累加）——
+  ['汇总站重算：覆盖 9 个处（7 个重算 + 廊涿/廊坊豁免）',
+    summaryStats.length === 9, String(summaryStats.length)],
+  ['汇总站重算：A 类 7 个处可重算、廊涿/廊坊不参与重算',
+    summaryStats.filter((s) => s.recalcable).length === 7 && summaryStats.filter((s) => s.exempt).length === 2,
+    `可重算 ${summaryStats.filter((s) => s.recalcable).length} / 豁免 ${summaryStats.filter((s) => s.exempt).length}`],
+  ['汇总站重算：豁免处（廊涿/廊坊）的汇总站行 ARE 参与明细（不被排除）',
+    summaryStats.filter((s) => s.exempt).every((s) => !s.recalcable), ''],
+  // 关键安全性断言：A 类的「汇总独有行」按「名称+单位」全部能在明细中找到
+  // → 说明它们只是「同款但单价/品牌/单位写法不一致」的冗余行，重算移除不会丢设备。
+  // （廊涿 184 / 廊坊 49 行不满足此条件 —— 正是它们必须豁免的原因）
+  ['汇总站重算：A 类的「六字段独有行」全部可按「名称+单位」在明细中找到（移除不丢设备）',
+    summaryStats.filter((s) => s.recalcable).every((s) => s.onlyK6 === s.removable),
+    summaryStats.filter((s) => s.recalcable).map((s) => `${s.station} ${s.onlyK6}/${s.removable}`).join(' / ')],
+  ['汇总站重算：A 类按「名称+单位」的汇总独有行 = 0（无真实新增设备会被丢掉）',
+    summaryStats.filter((s) => s.recalcable).every((s) => s.onlyNU === 0),
+    summaryStats.filter((s) => s.recalcable).map((s) => `${s.station}:${s.onlyNU}`).join(' / ')],
+  // 反向佐证：豁免处确实存在明细里没有的设备（这就是不能当汇总站的理由）
+  ['汇总站重算：廊涿/廊坊确实有明细中不存在的设备（故必须豁免）',
+    summaryStats.filter((s) => s.exempt).every((s) => s.onlyNU > 0),
+    summaryStats.filter((s) => s.exempt).map((s) => `${s.station}:${s.onlyNU}`).join(' / ')],
+  ['汇总站重算：幂等（把目标态喂回去 → 0 变化）',
+    summaryStats.filter((s) => s.recalcable).every((s) => s.idemDrift === 0),
+    summaryStats.filter((s) => s.recalcable).map((s) => `${s.station}:${s.idemDrift}`).join(' / ')],
+  // 目标态规模：锁住「重算确实带来了新行」（若某处 target <= sumRows 说明没在汇总）
+  ['汇总站重算：7 个 A 类处的目标态行数均 ≥ 现状（同款合并后仍应更多）',
+    summaryStats.filter((s) => s.recalcable).every((s) => s.target >= s.sumRows),
+    summaryStats.filter((s) => s.recalcable).map((s) => `${s.station} ${s.sumRows}→${s.target}`).join(' / ')],
+  ['汇总站重算：7 个 A 类处目标态合计 = 2743 行',
+    summaryStats.filter((s) => s.recalcable).reduce((a, s) => a + s.target, 0) === 2743,
+    String(summaryStats.filter((s) => s.recalcable).reduce((a, s) => a + s.target, 0))],
+  // 纯函数级口径（与 summarySite.ts 的单测呼应，此处锁「引用的常量确实生效」）
+  ['汇总站判定：保定可重算 / 廊涿·廊坊·总调中心豁免',
+    isRecalcableSummaryStation('保定', SUMMARY_SUBSITE) === true &&
+    isRecalcableSummaryStation('廊涿', SUMMARY_SUBSITE) === false &&
+    isRecalcableSummaryStation('廊坊', SUMMARY_SUBSITE) === false &&
+    isRecalcableSummaryStation('总调中心', SUMMARY_SUBSITE) === false, ''],
+  ['汇总站判定：普通子站不参与重算',
+    isRecalcableSummaryStation('保定', '保定一站') === false, ''],
 ]
 
 console.log('══ 断言 ══')

@@ -26,9 +26,14 @@ export type DeviceRow = {
 }
 
 // 各管理处把「子站合计」也作为一行存进了大表，这些行不能计入金额
-const SUMMARY_SUBSITE = '全站设备汇总'
-// 总调中心没有真实子站，它的「全站设备汇总」就是本站明细，必须保留
-const SUMMARY_EXEMPT_STATION = '总调中心'
+export const SUMMARY_SUBSITE = '全站设备汇总'
+// 以下管理处的「全站设备汇总」不是台账合计行，而是本站独立的设备清单，必须当正常明细保留：
+// - 总调中心：没有真实子站，「全站设备汇总」就是本站明细
+// - 廊涿 / 廊坊：其设备在明细子站中无对应（廊涿 184 行、廊坊 49 行），实为独立清单而非冗余合计，
+//   若按汇总站排除会把这两处的设备整体漏掉
+// ⚠️ 导出：om_selftest.ts 的护栏与 summarySite.ts 的重算判定都必须引用这一份，
+//    各写一份会在改动时悄悄分叉（一边排除、一边重算 → 数据打架）。
+export const NOT_SUMMARY_STATIONS = ['总调中心', '廊涿', '廊坊']
 // subsite 为空（设备直属管理处、不属于任何子站）时的占位子节点
 const DIRECT_SUBSITE = '（直属）'
 
@@ -95,7 +100,7 @@ export function buildDeviceTablesFromRows(rows: DeviceRow[]): BuiltTables {
     const station = (r.station || '').trim()
     const rawSub = (r.subsite || '').trim()
     const subsite = rawSub || DIRECT_SUBSITE
-    const isSummary = rawSub === SUMMARY_SUBSITE && station !== SUMMARY_EXEMPT_STATION
+    const isSummary = rawSub === SUMMARY_SUBSITE && !NOT_SUMMARY_STATIONS.includes(station)
     const sk = station + '\u0000' + subsite
     if (!subsiteMap.has(sk)) {
       subsiteMap.set(sk, { station: station || null, subsite, isSummary })

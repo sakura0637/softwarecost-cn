@@ -18,6 +18,26 @@ const ALIASES = {
 
 const EXTS = ['', '.ts', '.mts', '.js', '.mjs', '.vue', '/index.ts', '/index.mjs']
 
+/**
+ * 剥掉注释再做匹配。
+ *
+ * ⚠️ 为什么必须剥：本检查器用正则扫源码，注释里的文字同样会被扫到。
+ * 踩过的坑：某文件注释里写了「import { X } from './y'」这种**举例说明**，
+ * IMPORT_RE 是非贪婪且允许跨行的，于是从注释里的那个 `import` 一路吃到
+ * 下一个真实的 `from './deviceSeed'`，把中间整段（含 `export { A, B }`）当成导入子句，
+ * 解析出名为 `X` 的「缺失导出」→ 真代码没错却报红。
+ * 项目里其它检查器（check:enums / check:audit / check:pricing）也都有同样的前置步骤。
+ *
+ * ⚠️ 只剥注释，**绝不能连字符串一起剥**：模块路径本身就在引号里
+ * （`from './deviceSeed'`），把它清空后 IMPORT_RE 再也匹配不到任何导入 ——
+ * 结果是「校验 0 条 → 全部通过」的假绿，比误报更危险。
+ */
+function stripComments(src) {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, '')          // 块注释
+    .replace(/(^|[^:\\])\/\/[^\n]*/g, '$1')     // 行注释（避开 http:// 里的 //）
+}
+
 function walk(dir, out = []) {
   if (!fs.existsSync(dir)) return out
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -58,11 +78,14 @@ function parseClause(clause) {
   return { named, hasDefault: hasDefault && !typeOnly, hasNamespace, typeOnly }
 }
 
-const IMPORT_RE = /import\s+([\s\S]*?)\s+from\s+['"]([^'"]+)['"]/g
+// ⚠️ 子句里不许出现 `export`：非贪婪 + 允许跨行的写法，一旦匹配起点错了（例如匹配到
+//    注释/字符串里的 import），会一路吃到后面某个 `export { X } from './y'` 的 from，
+//    把导出语句当成导入子句。加这个否定前瞻把误吞在原位截断。
+const IMPORT_RE = /import\s+((?:(?!\bexport\b)[\s\S])*?)\s+from\s+['"]([^'"]+)['"]/g
 
 // 收集一个文件的导出符号
 function collectExports(file) {
-  const src = fs.readFileSync(file, 'utf8')
+  const src = stripComments(fs.readFileSync(file, 'utf8'))
   const names = new Set()
   let hasDefault = false
   let reExportAll = false
@@ -114,7 +137,7 @@ let checkedFiles = 0
 let checkedImports = 0
 
 for (const file of files) {
-  const src = fs.readFileSync(file, 'utf8')
+  const src = stripComments(fs.readFileSync(file, 'utf8'))
   const rel = path.relative(ROOT, file).replace(/\\/g, '/')
   let sawImport = false
   for (const m of src.matchAll(IMPORT_RE)) {
