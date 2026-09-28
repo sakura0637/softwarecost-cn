@@ -12,15 +12,22 @@
 //   2) 不新增「其它」子站
 //   3) 单价不动（台账 ops_price 是运维月费、库 unit_price 是采购价，**两个口径，绝不互灌**）
 //   4) source='manual'（页面手填）的行**受保护**，不计入删除
+//   5) ⚠️ **设备主数据（devices）默认不删**（主人 2026-09-28 追加口径：
+//      「先把站点-设备对照里面的设备按台账对齐，原来录进设备库里的设备先别删」）。
+//      删对照 ≠ 删设备：devices 是按款式去重的价格库，一条设备可被多子站共享；
+//      孤儿设备不出现在任何页面/导出/测算（v_device_prices 是 INNER JOIN devices）。
+//      确需清理时显式加 --prune-devices。
 //
-// ⚠️ 本脚本会**大批删数据**（实测约 1,865 行关联 + 空子站）。--apply 前自动备份三表。
+// ⚠️ 本脚本会**大批删数据**（实测约 1,865 行关联 + 空子站；**设备主数据不再删除**）。--apply 前自动备份三表。
 //
 // 用法
 //   npm run align:ledger                         # dry-run，只报告不写库
 //   npm run align:ledger -- --apply              # 真正执行（**执行前自动备份三表**）
-//   npm run align:ledger -- --restore=<备份文件>   # 从自动备份回滚（必须用等号）
+//   npm run align:ledger -- --restore=<备份文件>   # 从自动备份整库回滚（必须用等号）
+//   npm run align:ledger -- --restore-devices=<备份文件>  # 只补回缺失的设备主数据（幂等，不动站点/对照）
 //   npm run align:ledger -- --station=保定        # 只处理某个管理处
 //   npm run align:ledger -- --keep-manual         # 连 manual 行也按台账删（默认不删）
+//   npm run align:ledger -- --apply --prune-devices  # 顺带清理孤儿设备主数据（默认关）
 //
 // 连接：本脚本由普通 node 启动（不经 PM2），**.env 不会自动生效** →
 //       自己加载 .env，并复刻 db.ts 的连接串口径。
@@ -35,6 +42,9 @@ import { importSeedToDeviceTables } from '../server/utils/deviceSeed'
 
 const APPLY = process.argv.includes('--apply')
 const KEEP_MANUAL = process.argv.includes('--keep-manual') // ⚠️ 命名：见下方注释
+// 孤儿设备主数据清理：默认**关闭**（主人 2026-09-28 口径：原来录进设备库的设备先别删）
+// 只有显式传 --prune-devices 才会执行 4d 段的 DELETE FROM devices
+const PRUNE_DEVICES = process.argv.includes('--prune-devices')
 const HERE = dirname(fileURLToPath(import.meta.url))
 
 function findRoot() {
@@ -72,6 +82,18 @@ if (RESTORE_ARG && !RESTORE_FILE) {
 // --station=<名>：只处理某个管理处（用于分批执行）
 const STATION_ARG = process.argv.find((a) => a.startsWith('--station='))
 const ONLY_STATION = STATION_ARG ? STATION_ARG.slice('--station='.length) : ''
+
+// --restore-devices=<备份文件>：**只补回缺失的设备主数据**，不动 stations / station_devices。
+// 用途：修 4d 段误删的设备（原口径不该删）。与 --restore 的区别：
+//   --restore         整库回滚（清空三表后写回备份）——会覆盖此后的全部改动
+//   --restore-devices 只把备份里「当前库里没有的」设备行 INSERT 回去（幂等，可重复跑）
+const RESTORE_DEV_ARG = process.argv.find((a) => a.startsWith('--restore-devices='))
+const RESTORE_DEV_FILE = RESTORE_DEV_ARG ? RESTORE_DEV_ARG.slice('--restore-devices='.length) : ''
+if (RESTORE_DEV_ARG && !RESTORE_DEV_FILE) {
+  console.error('✗ --restore-devices 必须写成 --restore-devices=<备份文件>（用等号）')
+  console.error('   例：npm run align:ledger -- --restore-devices=_backup/ledger_align_2026-09-28-06-53-40.json')
+  process.exit(1)
+}
 
 // ── 连接串：与 server/utils/db.ts 同口径 ──
 loadEnv({ path: join(ROOT, '.env') })
@@ -183,6 +205,66 @@ async function restoreFrom(dump) {
   log(`回滚完成：${BACKUP_TABLES.map((t) => `${t} ${after[t]}`).join(' · ')}`)
 }
 
+/**
+ * 只补回缺失的设备主数据（不动 stations / station_devices）。
+ * 用于修 4d 段误删：把备份 devices 表里「当前库中 id 不存在」的行 INSERT 回去。
+ * 幂等：已存在的 id 跳过；可重复执行。
+ */
+async function restoreDevicesFrom(dump) {
+  const all = dump.tables.devices?.rows ?? []
+  const columns = dump.tables.devices?.columns ?? []
+  if (!columns.length) throw new Error('备份文件缺少 devices 表，拒绝恢复')
+
+  // 库里已有 id（整表读一次即可，量级 3k 行）
+  const existing = new Set(
+    (await pool.query('SELECT id FROM devices')).rows.map((r) => String(r.id))
+  )
+  const missing = all.filter((r) => !existing.has(String(r.id)))
+  log(`   备份中 devices：${all.length} 行 · 库中已有：${existing.size} 行 · 待补回：${missing.length} 行`)
+  if (!missing.length) {
+    log('   无需补回（备份中所有设备都还在库里）')
+    return { inserted: 0 }
+  }
+
+  // 打印待补回的样例（含条数），便于人工确认
+  for (const r of missing.slice(0, 10)) {
+    log(`      + [${r.id}] ${r.category ?? ''}/${r.subcategory ?? ''} · ${r.name ?? ''} · ${r.brand_model ?? ''} · ${r.unit ?? ''} · ${r.unit_price ?? ''}`)
+  }
+  if (missing.length > 10) log(`      …（共 ${missing.length} 行）`)
+
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const cols = columns.map((c) => `"${c}"`).join(',')
+    const CHUNK = 200
+    let inserted = 0
+    for (let i = 0; i < missing.length; i += CHUNK) {
+      const slice = missing.slice(i, i + CHUNK)
+      const params = []
+      const tuples = slice.map((row) => {
+        const base = params.length
+        for (const c of columns) params.push(row[c])
+        inserted++
+        return `(${columns.map((_, j) => `$${base + j + 1}`).join(',')})`
+      })
+      // ON CONFLICT DO NOTHING：并发/重复跑时安全（id 主键冲突则跳过）
+      await client.query(`INSERT INTO devices (${cols}) VALUES ${tuples.join(',')} ON CONFLICT (id) DO NOTHING`, params)
+    }
+    // 序列归位：保证后续自增 id 不与补回的行撞
+    await client.query(
+      `SELECT setval(pg_get_serial_sequence('devices', 'id'), GREATEST(COALESCE((SELECT MAX(id) FROM devices), 1), 1))`
+    )
+    await client.query('COMMIT')
+    log(`   已补回设备主数据 ${inserted} 行（stations / station_devices 未改动）`)
+    return { inserted }
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {})
+    throw e
+  } finally {
+    client.release()
+  }
+}
+
 // ── 目标态索引：以「(管理处, 子站, 六字段键)」为单位 ──
 // 六字段键与 deviceSeed.ts 的 lookup 口径一致：(分类, 子分类, 名称, 品牌型号, 单位, 单价)
 // ⚠️ 单价一律取 null 做键 —— 因为**单价不动**，库里的 unit_price 可能与台账不同却不该删行。
@@ -224,13 +306,19 @@ function shouldDelete(station, subsite, tgt, { name, category, subcategory, bran
 async function main() {
   log(RESTORE_FILE
     ? '═══ 台账 v3.4 对齐 · 回滚模式 ═══'
-    : (APPLY ? '═══ 台账 v3.4 对齐 · 执行模式（会删数据）═══' : '═══ 台账 v3.4 对齐 · DRY-RUN（不写库）═══'))
+    : (RESTORE_DEV_FILE
+      ? '═══ 台账 v3.4 对齐 · 设备主数据补回模式 ═══'
+      : (APPLY ? '═══ 台账 v3.4 对齐 · 执行模式（会删数据）═══' : '═══ 台账 v3.4 对齐 · DRY-RUN（不写库）═══')))
   log(`目标库：${maskedTarget}`)
 
   let restoreDump = null
+  let restoreDevDump = null
   if (RESTORE_FILE) {
     restoreDump = loadBackup(RESTORE_FILE)
     log(`回滚文件：${RESTORE_FILE}`)
+  } else if (RESTORE_DEV_FILE) {
+    restoreDevDump = loadBackup(RESTORE_DEV_FILE)
+    log(`补回来源：${RESTORE_DEV_FILE}`)
   } else {
     log(`目标态（台账）：${TARGET.length} 行`)
   }
@@ -248,6 +336,12 @@ async function main() {
 
   if (RESTORE_FILE) {
     await restoreFrom(restoreDump)
+    await pool.end()
+    return
+  }
+
+  if (RESTORE_DEV_FILE) {
+    await restoreDevicesFrom(restoreDevDump)
     await pool.end()
     return
   }
@@ -405,14 +499,23 @@ async function main() {
       )
     }
 
-    // 4d) 清理无引用的设备主数据（关联已全删的设备行）
-    log('── 清理孤儿设备主数据 ──')
-    const orphanDev = await client.query(
-      `DELETE FROM devices d
-        WHERE d.source <> 'manual'
-          AND NOT EXISTS (SELECT 1 FROM station_devices sd WHERE sd.device_id = d.id)`
-    )
-    log(`   已删设备主数据 ${orphanDev.rowCount} 行`)
+    // 4d) 设备主数据：默认**不删**（主人 2026-09-28 口径）
+    //     devices 是「按款式去重的价格库」，一条设备可被多个子站共享引用；
+    //     删掉对照不等于该款型从价格库消失。库里没有引用的设备是「安静的」
+    //     ——v_device_prices 是 INNER JOIN devices，孤儿设备不出现在浏览/导出/测算里。
+    //     仅当显式传 --prune-devices 时才清理孤儿设备（默认保留全部）。
+    if (PRUNE_DEVICES) {
+      log('── 清理孤儿设备主数据（--prune-devices 显式开启）──')
+      const orphanDev = await client.query(
+        `DELETE FROM devices d
+          WHERE d.source <> 'manual'
+            AND NOT EXISTS (SELECT 1 FROM station_devices sd WHERE sd.device_id = d.id)`
+      )
+      log(`   已删设备主数据 ${orphanDev.rowCount} 行`)
+    } else {
+      const keepDev = Number((await client.query(`SELECT COUNT(*)::int c FROM devices d WHERE NOT EXISTS (SELECT 1 FROM station_devices sd WHERE sd.device_id = d.id)`)).rows[0].c)
+      log(`── 设备主数据：保留全部（无引用者 ${keepDev} 行；如需清理请加 --prune-devices）──`)
+    }
 
     await client.query('COMMIT')
   } catch (e) {
