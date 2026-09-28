@@ -625,6 +625,19 @@ const ltSiteKeys = new Set(ltRows.map((r) => `${r.station}\u0000${r.subsite}`))
 const ltHasPriceField = ltRows.some((r) => r.unit_price != null || r.ops_price != null || r.opsPrice != null)
 const ltPick = (st: string, name: string, brand: string) =>
   ltRows.find((r) => r.station === st && r.name === name && String(r.brand_model || '').includes(brand))
+
+// 重算脚本源码（用于断言「护栏放行参数」确实声明了，而非只写在文档里）
+let recalcSrc = ''
+{
+  const cands: string[] = []
+  let d = dirname(fileURLToPath(import.meta.url))
+  for (let i = 0; i < 6; i++) { cands.push(d); d = dirname(d) }
+  cands.push(process.cwd())
+  for (const c of cands) {
+    const p = join(c, 'scripts', 'recalc_summary_sites.mjs')
+    if (existsSync(p)) { recalcSrc = readFileSync(p, 'utf8'); break }
+  }
+}
 const ltAccessSw = ltPick('总调中心', '接入交换机', 'S3700-28C-SI-A')
 const ltCoreRouter = ltPick('总调中心', '核心路由器', 'AR2200')
 
@@ -885,6 +898,21 @@ const checks: Array<[string, boolean, string]> = [
   ['台账对齐：9 个管理处全部出现在目标态',
     new Set(ltRows.map((r) => r.station)).size === 9,
     String(new Set(ltRows.map((r) => r.station)).size)],
+
+  // —— 汇总站护栏「放行参数」（2026-09-28：主人裁定以台账为准，删汇总站独有行）——
+  // 背景：align:ledger 删掉 7 个「台账无此子站」后，汇总站残留 217 行明细侧无同名的行。
+  //   逐条核对台账 v3.4 全库确认「全库 0 命中」→ 与第②步同口径删除。
+  // 本组断言锁三件事：① 台账里确实查无此名；② 放行参数名正确（不是无差别 --force-remove）；
+  //   ③ 审计清单有落盘目录（删了什么可事后逐条核对）。
+  ['汇总站护栏：台账全库查无「MDF配线柜/调度台/软交换」（故可随台账口径删除）',
+    !ltRows.some((r) => ['MDF配线柜', '调度台', '软交换'].includes(String(r.name || '').trim())),
+    String(ltRows.filter((r) => ['MDF配线柜', '调度台', '软交换'].includes(String(r.name || '').trim())).length)],
+  ['汇总站护栏：台账全库查无「蛇形管Φ30mm/光缆托板/护缆塞」（保沧通信施工整站未被台账收录）',
+    !ltRows.some((r) => ['蛇形管Φ30mm', '光缆托板', '护缆塞'].includes(String(r.name || '').trim())),
+    String(ltRows.filter((r) => ['蛇形管Φ30mm', '光缆托板', '护缆塞'].includes(String(r.name || '').trim())).length)],
+  ['汇总站护栏：重算脚本声明了 --allow-orphan-removal（带审计的放行，而非无差别绕过）',
+    recalcSrc.includes('--allow-orphan-removal') && recalcSrc.includes('summary_orphans_'),
+    recalcSrc.includes('--allow-orphan-removal') ? '已声明' : '未找到参数'],
 ]
 
 console.log('══ 断言 ══')

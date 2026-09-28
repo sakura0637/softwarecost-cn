@@ -23,6 +23,16 @@
 //   npm run recalc:summary -- --restore=<备份>   # 从自动备份回滚
 //   npm run recalc:summary -- --station=保定    # 只重算指定处（可重复传）
 //   npm run recalc:summary -- --include-manual  # 连 manual 行一起重算（默认保护）
+//   npm run recalc:summary -- --apply --allow-orphan-removal
+//                                               # ⚠️ 放行「汇总站独有、明细侧无同名」的行（默认会中止）
+//
+// 护栏与 --allow-orphan-removal 的由来：
+//   汇总站重算会**删除**「明细里已经没有」的行。若某行的名称在本处明细子站里找不到，
+//   它可能是「被删子站残留的真设备」→ 默认**中止**，不静默丢数据。
+//   2026-09-28 主人裁定「以台账为准」后，逐条核对台账 v3.4 全库 8046 行，
+//   确认这些名字**全部 0 命中**（含「在建实体环境」站）→ 与第②步同口径，一并删。
+//   放行时会：① 逐行打印；② 按 qty 分档统计；③ 把完整清单落盘到
+//   `_tmp_ledger/summary_orphans_<时间戳>.json`（事后可逐条核对，不依赖终端回滚历史）。
 //
 // 备份：--apply 时先把 devices / stations / station_devices 快照到
 //       _backup/summary_recalc_<时间戳>.json，不必再手工 pg_dump。
@@ -42,6 +52,9 @@ import { planSummaryRecalc, SUMMARY_SUBSITE, NOT_SUMMARY_STATIONS } from '../ser
 const APPLY = process.argv.includes('--apply')
 const INCLUDE_MANUAL = process.argv.includes('--include-manual')
 const HERE = dirname(fileURLToPath(import.meta.url))
+
+/** 审计清单文件名用的时间戳（本地时间，形如 2026-09-28-15-18-05） */
+const APPLY_FAIL_TAG = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
 
 /** 逐级上溯探测项目根（打包后 import.meta.url 不再指向 scripts/，别依赖单一路径） */
 function findRoot() {
@@ -373,23 +386,62 @@ async function main() {
     }
   }
 
-  // 护栏：有「名称在明细里找不到」的移除行 → 拒绝执行（宁可不动，也不能静默丢设备）
+  // ── 护栏：有「名称在明细里找不到」的移除行 → 拒绝执行（宁可不动，也不能静默丢设备）──
+  //
+  // 背景（2026-09-28 实测）：执行 align:ledger 删掉 7 个「台账无此子站」的子站后，
+  //   汇总站里仍残留这些子站的设备行 → 重算时明细侧找不到同名设备 → 护栏报红 217 行。
+  //   ⚠️ 这 217 行里既有 qty=0 的空行占位，也有 qty>0 的真实施工量（保沧通信施工 21 行、
+  //      保沧/廊涿安全监测 16 行、保沧核心节点 MDF配线柜/调度台/软交换/MDF告警监测终端 4 行）。
+  //   逐条核对台账 v3.4 全库 8046 行：这些名字**全部 0 命中**（含「在建实体环境」站）。
+  //   → 主人裁定「以台账为准」= 与第②步同口径，一并删除。
+  //
+  // 为什么不用 --force-remove 直接放行：它无差别绕过，连「汇总站独有的真设备」也一起吞。
+  //   本参数改为**带审计的放行**：逐行打印 + 按 qty 分档统计 + 落盘清单，删了什么一目了然。
   const guarded = plans.filter((p) => p.unknown.length)
-  if (guarded.length && APPLY) {
-    log('\n✗ 中止：以下汇总站要移除的设备在明细中找不到同名设备，疑似真实设备，拒绝执行：')
+  const ALLOW_ORPHAN = process.argv.includes('--allow-orphan-removal')
+  if (guarded.length) {
+    const total = guarded.reduce((a, p) => a + p.unknown.length, 0)
+    const withQty = guarded.reduce((a, p) => a + p.unknown.filter((r) => Number(r.qty) > 0).length, 0)
+    log('\n══ 护栏：汇总站独有行（明细侧无同名设备）══')
+    log(`   ${guarded.length} 个汇总站 · ${total} 行（其中 qty>0 的 ${withQty} 行）`)
     for (const p of guarded) {
-      log(`   ${p.manager.name}：${p.unknown.length} 行`)
-      for (const r of p.unknown) log(`      ${r.name} | ${r.spec} | 数量${r.qty}`)
+      const q = p.unknown.filter((r) => Number(r.qty) > 0)
+      log(`   · ${p.manager.name}：${p.unknown.length} 行（qty>0 的 ${q.length} 行）`)
     }
-    log('\n   请人工确认后处理：这些设备要么补进明细子站，要么确认可删。')
-    log('   如确需强行执行，可加 --force-remove（风险自负）。')
-    if (!process.argv.includes('--force-remove')) {
-      await pool.end()
-      process.exit(1)
+
+    // 落盘完整清单（便于事后逐条核对，不依赖终端回滚历史）
+    const auditDir = join(ROOT, '_tmp_ledger')
+    if (!existsSync(auditDir)) mkdirSync(auditDir, { recursive: true })
+    const auditFile = join(auditDir, `summary_orphans_${APPLY_FAIL_TAG}.json`)
+    const audit = {
+      generatedAt: new Date().toISOString(),
+      mode: APPLY ? 'apply' : 'dry-run',
+      note: '汇总站独有的待移除行（明细子站中无同名设备）。主人裁定口径：以台账为准，一并删除。',
+      total, withQty,
+      byManager: guarded.map((p) => ({
+        manager: p.manager.name,
+        total: p.unknown.length,
+        withQty: p.unknown.filter((r) => Number(r.qty) > 0).length,
+        rows: p.unknown.map((r) => ({ name: r.name, spec: r.spec, unit: r.unit, price: r.price, qty: r.qty, sub: r.sub })),
+      })),
     }
-    log('   ⚠️ 检测到 --force-remove，继续执行。')
-  } else if (guarded.length) {
-    log(`\n⚠️ ${guarded.length} 个汇总站存在「明细中找不到同名设备」的待移除行（dry-run 已标出，--apply 会中止）。`)
+    writeFileSync(auditFile, JSON.stringify(audit, null, 2))
+    log(`   清单已落盘：${relative(ROOT, auditFile)}`)
+
+    if (APPLY) {
+      if (!ALLOW_ORPHAN && !process.argv.includes('--force-remove')) {
+        log('\n✗ 中止：以上行在明细子站找不到同名设备，疑似真实设备，拒绝执行。')
+        log('   请人工确认后处理：这些设备要么补进明细子站，要么确认可删。')
+        log('   以台账为准（台账全库无此名）时，可加 --allow-orphan-removal 放行（会打印审计清单）。')
+        log('   不加参数地无差别绕过用 --force-remove（不推荐）。')
+        await pool.end()
+        process.exit(1)
+      }
+      log(`   ⚠️ 检测到 ${ALLOW_ORPHAN ? '--allow-orphan-removal' : '--force-remove'}，继续执行。`)
+      log(`   执行后将删除上述 ${total} 行（qty>0 的 ${withQty} 行，合计数量 ${guarded.reduce((a, p) => a + p.unknown.reduce((s, r) => s + (Number(r.qty) || 0), 0), 0)}）。`)
+    } else {
+      log('   （dry-run：未改动数据。--apply 会中止，除非显式放行。）')
+    }
   }
 
   // ── 3) 执行 ──
