@@ -17,6 +17,8 @@
   "check:pricing": "esbuild scripts/pricing_selftest.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/pricing_selftest.mjs --external:pg --external:bcryptjs --log-level=warning && node node_modules/.cache/pricing_selftest.mjs",
   "align:devices": "esbuild scripts/apply_device_align.mjs --bundle --platform=node --format=esm --external:pg --external:dotenv --outfile=node_modules/.cache/apply_device_align.mjs --log-level=warning && node node_modules/.cache/apply_device_align.mjs",
   "recalc:summary": "esbuild scripts/recalc_summary_sites.mjs --bundle --platform=node --format=esm --external:pg --external:dotenv --outfile=node_modules/.cache/recalc_summary_sites.mjs --log-level=warning && node node_modules/.cache/recalc_summary_sites.mjs",
+  "align:ledger": "esbuild scripts/apply_ledger_align.mjs --bundle --platform=node --format=esm --external:pg --external:dotenv --outfile=node_modules/.cache/apply_ledger_align.mjs --log-level=warning && node node_modules/.cache/apply_ledger_align.mjs",
+  "gen:ledger": "node scripts/gen_ledger_target.mjs",
   "check": "npm run check:imports && npm run check:vue && npm run check:perm && npm run check:dbsql && npm run check:enums && npm run check:audit && npm run check:pricing && npm run check:om"
   },
   "dependencies": {

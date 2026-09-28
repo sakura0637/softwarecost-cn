@@ -592,6 +592,42 @@ const summaryStats: SummaryStat[] = []
   }
 }
 
+// ══════════════════════════════════════════════════════════════
+// 台账 v3.4 对齐（2026-09-28）：「以台账为准」= 库里凡台账没有的行/子站一律删除
+//
+// 口径（主人明确）：
+//   ① 严格以台账为准（台账子站表没有的行 → 删；台账没有的子站 → 删）
+//   ② 不新增「其它」子站
+//   ③ **单价不动**（台账 ops_price 是运维月费、库 unit_price 是采购价，两个口径）
+//   ④ 同名多行**数量累加**（主表 + 合计后补充区块 / 主表内多组，都是同套设备）
+//
+// 这里离线锁住目标态种子的三条不变量：
+//   ① 目标态**不含单价字段的任何来源**（防有人把台账运维月费灌成采购价）
+//   ② 站点数与台账站级 sheet 一致（161）
+//   ③ 累加正确（抽查总调中心接入交换机 1+4+4=9、核心路由器 2+2+1=5）
+// ══════════════════════════════════════════════════════════════
+type LedgerTarget = { rows: Array<any> }
+let ledgerTarget: LedgerTarget | null = null
+{
+  // ⚠️ esbuild 打包后 import.meta.url 指向 node_modules/.cache/ → 不能直接 dirname/..
+  //    必须逐级上溯探测（项目既有约定：别依赖单一路径）。
+  const cands: string[] = []
+  let d = dirname(fileURLToPath(import.meta.url))
+  for (let i = 0; i < 6; i++) { cands.push(d); d = dirname(d) }
+  cands.push(process.cwd())
+  for (const c of cands) {
+    const p = join(c, 'server', 'seed', 'ledger_v34_target.json')
+    if (existsSync(p)) { ledgerTarget = JSON.parse(readFileSync(p, 'utf8')); break }
+  }
+}
+const ltRows: any[] = ledgerTarget?.rows ?? []
+const ltSiteKeys = new Set(ltRows.map((r) => `${r.station}\u0000${r.subsite}`))
+const ltHasPriceField = ltRows.some((r) => r.unit_price != null || r.ops_price != null || r.opsPrice != null)
+const ltPick = (st: string, name: string, brand: string) =>
+  ltRows.find((r) => r.station === st && r.name === name && String(r.brand_model || '').includes(brand))
+const ltAccessSw = ltPick('总调中心', '接入交换机', 'S3700-28C-SI-A')
+const ltCoreRouter = ltPick('总调中心', '核心路由器', 'AR2200')
+
 const checks: Array<[string, boolean, string]> = [
   // —— C.1 工作量法 ——
   ['人天单价 = 525.835249 元', Math.abs(params.dailyRate - 525.835249) < 1e-5, params.dailyRate.toFixed(6)],
@@ -829,6 +865,26 @@ const checks: Array<[string, boolean, string]> = [
     isRecalcableSummaryStation('总调中心', SUMMARY_SUBSITE) === false, ''],
   ['汇总站判定：普通子站不参与重算',
     isRecalcableSummaryStation('保定', '保定一站') === false, ''],
+
+  // —— 台账 v3.4 对齐（2026-09-28：严格以台账为准，库独有全删）——
+  // 目标态种子存在且规模正确（8319 行台账 → 同名累加后 8046 行）
+  ['台账对齐：目标态种子存在且行数为 8046（8319 行台账同名累加后）',
+    ltRows.length === 8046, String(ltRows.length)],
+  ['台账对齐：目标态覆盖 161 个「管理处/子站」组合（= 台账站级 sheet 数）',
+    ltSiteKeys.size === 161, String(ltSiteKeys.size)],
+  // ⚠️ 口径保护（最关键的一条）：目标态**绝不能带单价**
+  // 台账 ops_price 是运维月费（元/月），库 unit_price 是采购价（元）——两个口径，互灌会毁掉采购价库。
+  ['台账对齐：目标态不含任何单价字段（运维月费 ≠ 采购价，绝不互灌）',
+    !ltHasPriceField, ltHasPriceField ? '含 unit_price / ops_price 字段' : '无'],
+  // 同名累加正确性（抽查两处已知值）
+  ['台账对齐：同名累加正确（总调中心 接入交换机 1+4+4=9）',
+    ltAccessSw?.qty === 9, String(ltAccessSw?.qty)],
+  ['台账对齐：同名累加正确（总调中心 核心路由器 2+2+1=5）',
+    ltCoreRouter?.qty === 5, String(ltCoreRouter?.qty)],
+  // 台账每个站点在目标态都非空（防解析漏站）
+  ['台账对齐：9 个管理处全部出现在目标态',
+    new Set(ltRows.map((r) => r.station)).size === 9,
+    String(new Set(ltRows.map((r) => r.station)).size)],
 ]
 
 console.log('══ 断言 ══')
