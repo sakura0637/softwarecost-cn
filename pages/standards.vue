@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // 造价标准库页面：标准数据从数据库读取（/api/standards），失败回退静态数据
 // 参数明细（standard_parameters 从表）随标准一起返回，并在详情/编辑中合并展示与维护
-import { ref, computed, onMounted, reactive, watch } from 'vue'
+import { ref, computed, onMounted, reactive, watch, nextTick } from 'vue'
 import { standards as fallbackStandards, type CostStandard } from '~/composables/useStandards'
 import { useAuth } from '~/composables/useAuth'
 
@@ -83,18 +83,136 @@ const attachments = ref<any[]>([])
 const uploading = ref(false)
 const uploadFile = ref<File | null>(null)
 
-// 附件在线预览（无需下载）。previewAttachment 为当前预览的附件对象，null 表示关闭。
+// ── 附件在线预览（无需下载）──────────────────────────────────────────────
+// 格式判定：**扩展名优先、mime 兜底**。历史附件由浏览器上传，mime 有可能是
+// application/octet-stream —— 只看 mime 会把 Word/Excel 误判成「不可预览」。
+type PreviewKind = 'pdf' | 'image' | 'text' | 'word' | 'excel' | 'none'
+const EXT_IMAGE = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'ico']
+const EXT_TEXT = ['txt', 'md', 'csv', 'json', 'log', 'xml', 'html', 'htm']
+
+function previewKind(a: any): PreviewKind {
+  const ext = (String(a?.file_name || '').split('.').pop() || '').toLowerCase()
+  const mime = String(a?.mime_type || '').toLowerCase()
+  if (ext === 'pdf' || mime === 'application/pdf') return 'pdf'
+  if (ext === 'docx' || ext === 'doc' || mime.includes('wordprocessingml') || mime === 'application/msword') return 'word'
+  if (ext === 'xlsx' || ext === 'xls' || mime.includes('spreadsheetml') || mime === 'application/vnd.ms-excel') return 'excel'
+  if (EXT_IMAGE.includes(ext) || mime.startsWith('image/')) return 'image'
+  if (EXT_TEXT.includes(ext) || mime.startsWith('text/')) return 'text'
+  return 'none'
+}
+// PDF / 图片 / 文本交给浏览器原生内联（iframe）；Word / Excel 需前端渲染
+const INLINE_KINDS: PreviewKind[] = ['pdf', 'image', 'text']
+const isInline = (a: any) => INLINE_KINDS.includes(previewKind(a))
+const isWord = (a: any) => previewKind(a) === 'word'
+const isExcel = (a: any) => previewKind(a) === 'excel'
+const PREVIEWABLE = (a: any) => previewKind(a) !== 'none'
+
 const previewAttachment = ref<any | null>(null)
-const PREVIEWABLE = (mime: string | null | undefined) =>
-  !!mime && (mime === 'application/pdf' || mime.startsWith('image/') || mime.startsWith('text/'))
-function openPreview(a: any) {
+const previewUrl = (a: any): string =>
+  `/api/standards/${selectedStandard.value!.id}/attachments/${a.id}?preview=1`
+
+// Word：docx-preview 就地渲染成 DOM（保留排版）。老 .doc 不支持 → 提示下载
+const docxHost = ref<HTMLElement | null>(null)
+const docxLoading = ref(false)
+const docxError = ref('')
+// Excel：SheetJS 解析成表格 HTML，多 sheet 可切换
+const xlsxSheets = ref<{ name: string; html: string }[]>([])
+const xlsxActive = ref(0)
+const xlsxLoading = ref(false)
+const xlsxError = ref('')
+
+// 渲染序号：浮层里切换文件时，作废上一次尚未完成的渲染
+let renderSeq = 0
+
+async function openPreview(a: any) {
   previewAttachment.value = a
+  await nextTick() // 等浮层与渲染容器挂载
+  const kind = previewKind(a)
+  if (kind === 'word') await renderDocx(a)
+  else if (kind === 'excel') await renderXlsx(a)
 }
+
 function closePreview() {
+  renderSeq++ // 作废在途渲染
   previewAttachment.value = null
+  if (docxHost.value) docxHost.value.innerHTML = ''
+  docxLoading.value = false
+  docxError.value = ''
+  xlsxSheets.value = []
+  xlsxError.value = ''
 }
-function previewUrl(a: any): string {
-  return `/api/standards/${selectedStandard.value!.id}/attachments/${a.id}?preview=1`
+
+// 上传来的文件一律按不可信内容处理：只留结构，剔除脚本与事件属性
+function sanitizeHtml(html: string): string {
+  const doc = new DOMParser().parseFromString(html, 'text/html')
+  doc.querySelectorAll('script, iframe, object, embed, link, style, meta').forEach((el) => el.remove())
+  doc.querySelectorAll('*').forEach((el) => {
+    for (const attr of Array.from(el.attributes)) {
+      if (/^on/i.test(attr.name) || /javascript:/i.test(attr.value)) el.removeAttribute(attr.name)
+    }
+  })
+  return doc.body.innerHTML
+}
+
+async function renderDocx(a: any) {
+  const seq = ++renderSeq
+  docxLoading.value = true
+  docxError.value = ''
+  try {
+    const res = await fetch(previewUrl(a))
+    if (!res.ok) throw new Error(`读取失败（${res.status}）`)
+    const buf = await res.arrayBuffer()
+    const { renderAsync } = await import('docx-preview')
+    const el = docxHost.value
+    if (seq !== renderSeq || !el) return
+    el.innerHTML = ''
+    await renderAsync(buf, el, undefined, {
+      className: 'docx',
+      inWrapper: true,
+      breakPages: true,
+      ignoreWidth: false, // 保留 A4 纸宽；窄屏由容器横向滚动
+      ignoreHeight: true,
+      ignoreFonts: false,
+      experimental: true,
+    })
+    if (seq !== renderSeq) { el.innerHTML = ''; return }
+    el.querySelectorAll('script').forEach((s) => s.remove())
+  } catch (e: any) {
+    console.error('[standards] docx 预览渲染失败', e)
+    const ext = (String(a?.file_name || '').split('.').pop() || '').toLowerCase()
+    docxError.value = ext === 'doc'
+      ? '老版 .doc 格式不支持在线预览，请点击右上角「下载」查看。'
+      : '该文档渲染失败，请点击右上角「下载」查看。'
+  } finally {
+    if (seq === renderSeq) docxLoading.value = false
+  }
+}
+
+async function renderXlsx(a: any) {
+  const seq = ++renderSeq
+  xlsxLoading.value = true
+  xlsxError.value = ''
+  xlsxSheets.value = []
+  try {
+    const res = await fetch(previewUrl(a))
+    if (!res.ok) throw new Error(`读取失败（${res.status}）`)
+    const buf = await res.arrayBuffer()
+    const XLSX: any = await import('xlsx')
+    const wb = XLSX.read(buf, { type: 'array' })
+    const sheets = (wb.SheetNames as string[]).map((n) => ({
+      name: n,
+      html: sanitizeHtml(XLSX.utils.sheet_to_html(wb.Sheets[n])),
+    }))
+    if (seq !== renderSeq) return
+    xlsxSheets.value = sheets
+    xlsxActive.value = 0
+  } catch (e: any) {
+    console.error('[standards] xlsx 预览解析失败', e)
+    if (seq !== renderSeq) return
+    xlsxError.value = '该表格解析失败，请点击右上角「下载」查看。'
+  } finally {
+    if (seq === renderSeq) xlsxLoading.value = false
+  }
 }
 
 // 打开标准详情时拉取附件列表
@@ -660,7 +778,10 @@ watch(selectedStandard, (std) => {
           class="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4"
           @click.self="closePreview"
         >
-          <div class="flex h-[85vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl bg-white shadow-xl">
+          <div
+            class="flex h-[85vh] w-full flex-col overflow-hidden rounded-2xl bg-white shadow-xl"
+            :class="isWord(previewAttachment) || isExcel(previewAttachment) ? 'max-w-6xl' : 'max-w-4xl'"
+          >
             <div class="flex items-center justify-between border-b border-gray-100 px-5 py-3">
               <div class="min-w-0">
                 <p class="truncate text-sm font-semibold text-gray-900">{{ previewAttachment.file_name }}</p>
@@ -680,10 +801,56 @@ watch(selectedStandard, (std) => {
                 </button>
               </div>
             </div>
-            <div class="flex-1 bg-gray-100">
-              <template v-if="PREVIEWABLE(previewAttachment.mime_type)">
-                <iframe :src="previewUrl(previewAttachment)" class="h-full w-full border-0" />
-              </template>
+            <div class="relative flex-1 overflow-hidden bg-gray-100">
+              <!-- PDF / 图片 / 文本：浏览器原生内联渲染 -->
+              <iframe
+                v-if="isInline(previewAttachment)"
+                :src="previewUrl(previewAttachment)"
+                class="h-full w-full border-0"
+              />
+
+              <!-- Word：前端渲染（docx-preview），保留排版，可纵向滚动 -->
+              <div v-else-if="isWord(previewAttachment)" class="relative h-full overflow-auto bg-gray-200">
+                <div ref="docxHost" class="docx-host" />
+                <div
+                  v-if="docxLoading"
+                  class="absolute inset-0 z-10 flex items-center justify-center bg-gray-100/85 text-sm text-gray-500"
+                >
+                  正在渲染 Word 文档…
+                </div>
+                <div
+                  v-else-if="docxError"
+                  class="absolute inset-0 z-10 flex items-center justify-center bg-gray-100 p-6 text-center text-sm text-gray-500"
+                >
+                  {{ docxError }}
+                </div>
+              </div>
+
+              <!-- Excel：解析成表格，多工作表可切换 -->
+              <div v-else-if="isExcel(previewAttachment)" class="flex h-full flex-col bg-white">
+                <div v-if="xlsxLoading" class="flex flex-1 items-center justify-center text-sm text-gray-500">
+                  正在解析表格…
+                </div>
+                <div v-else-if="xlsxError" class="flex flex-1 items-center justify-center p-6 text-center text-sm text-gray-500">
+                  {{ xlsxError }}
+                </div>
+                <template v-else>
+                  <div
+                    v-if="xlsxSheets.length > 1"
+                    class="flex shrink-0 gap-1 overflow-x-auto border-b border-gray-100 bg-gray-50 px-3 py-2"
+                  >
+                    <button
+                      v-for="(s, i) in xlsxSheets"
+                      :key="s.name"
+                      class="shrink-0 rounded px-2 py-1 text-xs"
+                      :class="i === xlsxActive ? 'bg-primary text-white' : 'text-gray-600 hover:bg-gray-200'"
+                      @click="xlsxActive = i"
+                    >{{ s.name }}</button>
+                  </div>
+                  <div class="xlsx-host flex-1 overflow-auto" v-html="xlsxSheets[xlsxActive]?.html" />
+                </template>
+              </div>
+
               <div v-else class="flex h-full items-center justify-center text-sm text-gray-500">
                 该文件格式暂不支持在线预览，请点击右上角「下载」查看。
               </div>
@@ -858,5 +1025,38 @@ watch(selectedStandard, (std) => {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+</style>
+
+<!-- 预览内容由运行时动态插入，scoped 样式选不中 → 单独用非 scoped 块 -->
+<style>
+.docx-host .docx-wrapper {
+  background: transparent;
+  padding: 16px 8px;
+}
+.docx-host .docx-wrapper > section.docx {
+  margin: 0 auto 16px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+}
+.docx-host table {
+  border-collapse: collapse;
+}
+.xlsx-host {
+  background: #fff;
+}
+.xlsx-host table {
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.xlsx-host td,
+.xlsx-host th {
+  border: 1px solid #e5e7eb;
+  padding: 2px 6px;
+  white-space: nowrap;
+  vertical-align: top;
+}
+.xlsx-host tr:first-child td {
+  background: #f9fafb;
+  font-weight: 600;
 }
 </style>
